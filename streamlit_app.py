@@ -202,7 +202,7 @@ def edges_geo_layers(graph: Graph, *, hour: int, color_by: str = "class") -> Tup
 def town_layers(graph: Graph) -> List[pdk.Layer]:
     """Parques, plaza central, agüita y casitas para darle look de pueblito."""
     dlat, dlon = guess_steps(graph)
-    nodes = list(_graph.iter_nodes())
+    nodes = list(graph.iter_nodes())
     lat_c = sum(n.lat for n in nodes) / len(nodes)
     lon_c = sum(n.lon for n in nodes) / len(nodes)
 

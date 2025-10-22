@@ -1,0 +1,6 @@
+# Runtime
+streamlit>=1.36
+pydeck>=0.9.0
+
+# Testing (optional to run local tests)
+pytest>=7.0

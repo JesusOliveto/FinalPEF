@@ -1,0 +1,36 @@
+@startuml
+skinparam style strictuml
+actor UI as User
+participant "streamlit_app.py" as UIApp
+participant "RoutingService" as RS
+participant "PairwiseDistanceService" as PDS
+participant "Router (A*/Dijkstra)" as RTR
+participant "PairwiseMatrixCache" as PMC
+participant "SSSPMemo/RouteCache" as CACH
+participant "MultiStopSolver\n(HeldKarpExact/HeuristicRoute)" as SOLV
+participant "RouteSplicer" as SPL
+
+User -> UIApp: set origin + destinos + hour + modo
+UIApp -> RS: route(request: RouteRequest)
+
+RS -> PMC: get(signature)
+alt matriz cache hit
+  PMC --> RS: (time_matrix, path_map)
+else cache miss
+  RS -> PDS: compute_matrix(graph, waypoints, hour, alg, traffic, heuristic)
+  PDS -> CACH: check SSSP/Route cache
+  PDS -> RTR: route(...) por pares (batch + concurrencia)
+  RTR --> PDS: RouteLeg + SearchStats (por par)
+  PDS -> PMC: set(signature, time_matrix, path_map)
+  PDS --> RS: (time_matrix, path_map)
+end
+
+RS -> SOLV: solve(waypoints, time_matrix, mode)
+SOLV --> RS: visit_order_idx
+
+RS -> SPL: splice(waypoints, visit_order_idx, path_map)
+SPL --> RS: legs: List<RouteLeg>
+
+RS --> UIApp: RouteResult(visit_order, legs, totales, métricas)
+UIApp --> User: muestra ruta en mapa + KPIs
+@enduml

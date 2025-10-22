@@ -1,0 +1,67 @@
+@startuml
+skinparam style strictuml
+hide circle
+skinparam classAttributeIconSize 0
+
+' ==== “Entidades” de servicio (clases OO) ====
+entity RoutingService
+entity PairwiseDistanceService
+entity RouteSplicer
+entity ConcurrencyExecutor
+entity Profiler
+
+entity Router {  -- interfaz/estrategia pairwise --
+}
+entity AStarRouter
+entity DijkstraRouter
+
+entity TrafficModel
+entity HistoricalTrafficModel
+
+entity Heuristic
+entity GeoLowerBoundHeuristic
+entity LearnedHistoricalHeuristic
+entity HybridConservativeHeuristic
+
+entity MultiStopSolver
+entity HeldKarpExact
+entity HeuristicRoute
+
+entity RouteCache
+entity SSSPMemo
+entity PairwiseMatrixCache
+
+entity Graph
+
+' ==== Relaciones (cardinalidades de uso/composición) ====
+RoutingService ||--|| Graph : usa
+RoutingService ||--|| TrafficModel : usa
+RoutingService ||--|| Heuristic : usa
+RoutingService ||--|| PairwiseDistanceService : coordina
+RoutingService ||--|| MultiStopSolver : solver_exact
+RoutingService ||--|| MultiStopSolver : solver_heur
+RoutingService ||--|| RouteSplicer : concatena
+RoutingService ||--|| Profiler : perf
+
+PairwiseDistanceService ||--|| AStarRouter : usa
+PairwiseDistanceService ||--|| DijkstraRouter : usa
+PairwiseDistanceService ||--o{ ConcurrencyExecutor : paraleliza
+PairwiseDistanceService ||--|| RouteCache : cache_rutas
+PairwiseDistanceService ||--|| SSSPMemo : memo_sssp
+PairwiseDistanceService ||--|| PairwiseMatrixCache : cache_matriz
+
+AStarRouter ||--|| Heuristic : requiere
+AStarRouter ||--|| TrafficModel : requiere
+AStarRouter ||--|| Graph : consulta
+
+DijkstraRouter ||--|| TrafficModel : requiere
+DijkstraRouter ||--|| Graph : consulta
+
+HistoricalTrafficModel ||--|| TrafficModel : implementa
+GeoLowerBoundHeuristic ||--|| Heuristic : implementa
+LearnedHistoricalHeuristic ||--|| Heuristic : implementa
+HybridConservativeHeuristic ||--|| Heuristic : implementa
+
+HeldKarpExact ||--|| MultiStopSolver : implementa
+HeuristicRoute ||--|| MultiStopSolver : implementa
+@enduml

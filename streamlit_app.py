@@ -202,7 +202,7 @@ def edges_geo_layers(graph: Graph, *, hour: int, color_by: str = "class") -> Tup
 def town_layers(graph: Graph) -> List[pdk.Layer]:
     """Parques, plaza central, agüita y casitas para darle look de pueblito."""
     dlat, dlon = guess_steps(graph)
-    nodes = list(graph.iter_nodes())
+    nodes = list(_graph.iter_nodes())
     lat_c = sum(n.lat for n in nodes) / len(nodes)
     lon_c = sum(n.lon for n in nodes) / len(nodes)
 
@@ -364,7 +364,7 @@ with st.sidebar.expander("Heurística (v95 por hora)"):
 # ==========================================================
 
 @st.cache_data(show_spinner=False)
-def make_pois(graph: Graph) -> Dict[str, int]:
+def make_pois(_graph: Graph, *, version_key: str) -> Dict[str, int]:
     """Crea un set chico de POIs lindos: Plaza, Escuela, Mercado, etc. -> node_id."""
     rnd = random.Random(99)
     nodes = list(graph.iter_nodes())
@@ -391,7 +391,12 @@ def make_pois(graph: Graph) -> Dict[str, int]:
     return pois
 
 
-POIS = make_pois(graph)
+_nodes_for_sig = list(graph.iter_nodes())
+_edges_for_sig = sum(1 for _ in graph.iter_edges())
+_lat_sig = sum(n.lat for n in _nodes_for_sig)/len(_nodes_for_sig)
+_lon_sig = sum(n.lon for n in _nodes_for_sig)/len(_nodes_for_sig)
+_sig = f"{len(_nodes_for_sig)}-{_edges_for_sig}-{round(_lat_sig,6)}-{round(_lon_sig,6)}"
+POIS = make_pois(graph, version_key=_sig)
 
 st.sidebar.markdown("---")
 origin_label = st.sidebar.selectbox("Origen (POI)", list(POIS.keys()), index=0)

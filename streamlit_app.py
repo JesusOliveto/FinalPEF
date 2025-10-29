@@ -194,7 +194,7 @@ if points_layer: layers.append(points_layer)
 st.pydeck_chart(
     pdk.Deck(
         initial_view_state=pdk.ViewState(latitude=lat_c, longitude=lon_c, zoom=zoom, pitch=pitch),
-        layers=layers, map_style="mapbox://styles/mapbox/dark-v11",
+        layers=layers, map_style="none",
     ),
     use_container_width=True,
 )

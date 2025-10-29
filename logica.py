@@ -290,7 +290,7 @@ class Graph:
             center_xy_m=(0.0, 0.0),
             nx=13, ny=13,
             step_m=110.0,
-            rotation_deg=-22.0,
+            rotation_deg=-23,
             primary_mod=4,   # avenidas cada 4 calles
             collector_mod=2, # colectoras cada 2
             start_id=next_id

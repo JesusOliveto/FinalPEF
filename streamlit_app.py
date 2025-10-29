@@ -465,8 +465,8 @@ route_layer, points_layer = route_layers(route_leg_list, graph)
 # activá "Centro de ciudad" en el sidebar.
 nodes = list(graph.iter_nodes())
 # coordenadas solicitadas
-lat_c_default = -30.979684570698357
-lon_c_default = -64.09442418858212
+lat_c_default = -30.986154349785995
+lon_c_default = -64.08957839045158
 
 with st.sidebar.expander("Mapa / Cámara", expanded=False):
     center_mode = st.radio(
@@ -500,7 +500,7 @@ if points_layer:
 
 st.pydeck_chart(
     pdk.Deck(
-        initial_view_state=pdk.ViewState(latitude=lat_c, longitude=lon_c, zoom=14.2, pitch=0),
+        initial_view_state=pdk.ViewState(latitude=lat_c, longitude=lon_c, zoom=zoom, pitch=pitch, bearing=bearing),
         layers=layers,
         map_style=None,
         parameters={"clearColor": COLOR_BG},

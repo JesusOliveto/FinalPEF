@@ -227,113 +227,100 @@ class Graph:
         return g
 
     # ---------- NUEVO: importación desde OpenStreetMap ----------
-    @staticmethod
-    def from_osm_place(
-        place_name: str,
-        *,
-        network_type: str = "drive",
-        cache_graphml: Optional[str] = None,
-        retain_all: bool = False,
-        simplify: bool = True,
-    ) -> "Graph":
-        """Construye un Graph desde un lugar OSM (e.g., 'Jesús María, Córdoba, Argentina').
+@staticmethod
+def from_osm_place(
+    place_name: str,
+    *,
+    network_type: str = "drive",
+    cache_graphml: Optional[str] = None,
+    retain_all: bool = False,
+    simplify: bool = True,
+    # NUEVO: fallbacks
+    fallback_center: Optional[Tuple[float, float]] = (-30.9859, -64.0947),
+    fallback_dist_m: int = 5000,
+    bbox: Optional[Tuple[float, float, float, float]] = None,  # (south, west, north, east)
+) -> "Graph":
+    """Intenta por polígono; si no, usa centro+radio o bbox."""
+    try:
+        import osmnx as ox
+        import networkx as nx  # noqa
+    except Exception as exc:
+        raise RuntimeError("Requiere 'osmnx' (`pip install osmnx`).") from exc
 
-        Requiere `osmnx`. Si `cache_graphml` existe, se carga desde ahí; si no, se descarga
-        y guarda en ese path (si fue provisto).
-
-        - network_type: 'drive' trae calles transitables.
-        - retain_all: si False, se queda con la componente más grande.
-        """
-        try:
-            import osmnx as ox
-            import networkx as nx  # noqa: F401 (solo for typing/side effects)
-        except Exception as exc:
-            raise RuntimeError(
-                "Este modo requiere el paquete 'osmnx'. Instalalo con `pip install osmnx`."
-            ) from exc
-
-        if cache_graphml and os.path.exists(cache_graphml):
-            G = ox.load_graphml(cache_graphml)
+    # 1) Si hay cache, cargar y seguir
+    if cache_graphml and os.path.exists(cache_graphml):
+        G = ox.load_graphml(cache_graphml)
+    else:
+        G = None
+        # 2) Si pasaron bbox explícito, usarlo
+        if bbox is not None:
+            south, west, north, east = bbox
+            G = ox.graph_from_bbox(north, south, east, west, network_type=network_type, simplify=simplify)
         else:
-            G = ox.graph_from_place(place_name, network_type=network_type, simplify=simplify)
-            if not retain_all:
-                G = ox.utils_graph.get_largest_component(G, strongly=True)
-            if cache_graphml:
-                os.makedirs(os.path.dirname(cache_graphml), exist_ok=True)
-                ox.save_graphml(G, cache_graphml)
-
-        # Asegurar CRS geográfico (lat/lon)
-        if hasattr(G, "graph") and G.graph.get("crs") is None:
-            # osmnx moderno ya retorna WGS84; por si acaso
-            G = ox.project_graph(G, to_crs="EPSG:4326")
-
-        # Mapeo de highway -> clase y velocidad por defecto
-        primary_like = {
-            "motorway", "trunk", "primary", "motorway_link", "trunk_link", "primary_link", "secondary", "secondary_link"
-        }
-        collector_like = {"tertiary", "tertiary_link"}
-        # resto -> residential
-
-        default_speed: Dict[RoadClass, float] = {
-            RoadClass.PRIMARY: 60.0,
-            RoadClass.COLLECTOR: 45.0,
-            RoadClass.RESIDENTIAL: 35.0,
-        }
-
-        def to_road_class(highway_val: Any) -> RoadClass:
-            # highway puede ser str o list
-            if isinstance(highway_val, (list, tuple)):
-                hv = str(highway_val[0]).lower()
-            else:
-                hv = str(highway_val).lower()
-            if hv in primary_like:
-                return RoadClass.PRIMARY
-            if hv in collector_like:
-                return RoadClass.COLLECTOR
-            return RoadClass.RESIDENTIAL
-
-        def parse_maxspeed(val: Any, rc: RoadClass) -> float:
-            # maxspeed puede ser "60", "60 km/h", ['40', '60'], etc.
-            if val is None:
-                return default_speed[rc]
-            if isinstance(val, (list, tuple)):
-                for x in val:
-                    try:
-                        return float(str(x).split()[0])
-                    except Exception:
-                        continue
-                return default_speed[rc]
+            # 3) Intentar por place (polígono). Si falla, caer a point+dist
             try:
-                return float(str(val).split()[0])
+                G = ox.graph_from_place(place_name, network_type=network_type, simplify=simplify)
             except Exception:
-                return default_speed[rc]
+                G = None
+            if G is None:
+                # Geocodificar a punto (si no pasaron centro)
+                if fallback_center is None:
+                    lat, lon = ox.geocode(place_name)
+                else:
+                    lat, lon = fallback_center
+                G = ox.graph_from_point((lat, lon), dist=fallback_dist_m, network_type=network_type, simplify=simplify)
 
-        # Mapear ids OSM -> ids internos contiguos
-        g = Graph()
-        idmap: Dict[int, int] = {}
-        next_id = 0
-        for nid, data in G.nodes(data=True):
-            lat = float(data.get("y"))
-            lon = float(data.get("x"))
-            idmap[nid] = next_id
-            g.add_node(next_id, lat, lon)
-            next_id += 1
+        if not retain_all:
+            G = ox.utils_graph.get_largest_component(G, strongly=True)
+        if cache_graphml:
+            os.makedirs(os.path.dirname(cache_graphml), exist_ok=True)
+            ox.save_graphml(G, cache_graphml)
 
-        # Crear edges dirigidos respetando oneway y longitudes
-        for u, v, data in G.edges(data=True):
-            u2 = idmap[u]; v2 = idmap[v]
-            length_m = float(data.get("length", 0.0))
-            if length_m <= 0.0:
-                n1 = g.get_node(u2); n2 = g.get_node(v2)
-                length_m = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
+    # --- construir nuestro Graph propio ---
+    g = Graph()
+    idmap: Dict[int, int] = {}
+    next_id = 0
+    for nid, data in G.nodes(data=True):
+        lat = float(data.get("y"))
+        lon = float(data.get("x"))
+        idmap[nid] = next_id
+        g.add_node(next_id, lat, lon)
+        next_id += 1
 
-            rc = to_road_class(data.get("highway", "residential"))
-            ff = parse_maxspeed(data.get("maxspeed"), rc)
-            oneway = bool(data.get("oneway", False))
-            # En el grafo dirigido de osmnx ya están las direcciones correctas; marcamos el flag
-            g.add_edge(u2, v2, length_m, rc, ff, one_way=oneway)
+    primary_like = {"motorway","trunk","primary","motorway_link","trunk_link","primary_link","secondary","secondary_link"}
+    collector_like = {"tertiary","tertiary_link"}
+    default_speed = {RoadClass.PRIMARY:60.0, RoadClass.COLLECTOR:45.0, RoadClass.RESIDENTIAL:35.0}
 
-        return g
+    def to_road_class(hval):
+        hv = (hval[0] if isinstance(hval,(list,tuple)) else hval)
+        hv = str(hv).lower()
+        if hv in primary_like: return RoadClass.PRIMARY
+        if hv in collector_like: return RoadClass.COLLECTOR
+        return RoadClass.RESIDENTIAL
+
+    def parse_maxspeed(val, rc):
+        if val is None: return default_speed[rc]
+        if isinstance(val,(list,tuple)):
+            for x in val:
+                try: return float(str(x).split()[0])
+                except: pass
+            return default_speed[rc]
+        try: return float(str(val).split()[0])
+        except: return default_speed[rc]
+
+    for u, v, data in G.edges(data=True):
+        u2 = idmap[u]; v2 = idmap[v]
+        length_m = float(data.get("length", 0.0))
+        if length_m <= 0.0:
+            n1 = g.get_node(u2); n2 = g.get_node(v2)
+            length_m = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
+        rc = to_road_class(data.get("highway", "residential"))
+        ff = parse_maxspeed(data.get("maxspeed"), rc)
+        oneway = bool(data.get("oneway", False))
+        g.add_edge(u2, v2, length_m, rc, ff, one_way=oneway)
+
+    return g
+
 
 
 # ==========================================================

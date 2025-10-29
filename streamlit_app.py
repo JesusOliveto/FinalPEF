@@ -85,6 +85,8 @@ def load_services(
                 cache_graphml=cache_graphml_path,
                 retain_all=False,
                 simplify=True,
+                fallback_center=(LAT_JM, LON_JM),
+                fallback_dist_m=5000,
             )
         except Exception as e:
             st.error(f"No se pudo cargar OSM ({e}). Uso ciudad sintética.")

@@ -382,7 +382,7 @@ def make_pois(_graph: Graph, *, version_key: str) -> Dict[str, int]:
         "Capilla",
         "Biblioteca",
         "Terminal",
-        "Hospitalito",
+        "Hospital",
     ]
     pois: Dict[str, int] = {}
     pois[labels[0]] = center.id

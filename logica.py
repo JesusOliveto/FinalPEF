@@ -166,9 +166,9 @@ class Graph:
         g = Graph()
 
         # Centro de referencia (aprox. Plaza San Martín)
-        LAT0 = -30.9859
-        LON0 = -64.0947
-
+        LAT0 = -30.980556
+        LON0 = -64.091944
+        
         # Conversión plano local (metros) <-> lat/lon
         Kx = 111000.0 * cos(radians(LAT0))  # m por grado lon
         Ky = 111000.0                        # m por grado lat

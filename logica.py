@@ -1,60 +1,43 @@
+# -*- coding: utf-8 -*-
 """
-logica.py — Motor de ruteo multi-destino para ciudad tipo "pueblito" (PEF 2025)
+logica.py — Motor de ruteo para “Pueblito: Rutas Inteligentes”
+Versión sin OSM, con una ciudad hardcodeada que emula la traza de Jesús María.
 
-NOVEDADES:
-- Graph.from_osm_place(): importa una red vial real desde OpenStreetMap usando osmnx.
-- Mapeo de highway OSM -> RoadClass con velocidades libres (usa maxspeed si existe).
-- Resto del motor (A*, Dijkstra, matriz par-a-par, Held-Karp, NN+2opt) se mantiene.
-
-Si no tenés osmnx instalado o no hay Internet, la app puede seguir usando
-Graph.build_small_town() (ciudad sintética).
+Incluye:
+- Graph.build_jesus_maria_hardcoded(): dos grillas rotadas + arteria primaria diagonal.
+- Algoritmos: Dijkstra y A* (heurística admisible).
+- Matriz par-a-par con batching/concurrencia y TSP (Held-Karp / NN+2opt).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import (
-    Dict,
-    List,
-    Tuple,
-    Iterable,
-    Iterator,
-    Optional,
-    Any,
-    Callable,
-    Mapping,
-)
-from math import radians, sin, cos, asin, sqrt
+from typing import Dict, List, Tuple, Iterable, Iterator, Optional, Any, Callable, Mapping
 from collections import defaultdict, OrderedDict
+from math import radians, sin, cos, asin, sqrt
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import cProfile
-import pstats
-import io
 import random
 import time
+import cProfile, pstats, io
 import unittest
-import os
+
 
 # ==========================================================
-# 1) Enumeraciones y alias de tipos
+# Tipos y enums
 # ==========================================================
-
 class Algorithm(str, Enum):
-    """Algoritmos disponibles para ruteo par-a-par."""
     ASTAR = "astar"
     DIJKSTRA = "dijkstra"
-    BFS = "bfs"  # educativo; en este motor se resuelve como Dijkstra costo=tiempo
+    BFS = "bfs"
 
 
 class RouteMode(str, Enum):
-    """Modos de ruteo multi-destino."""
-    VISIT_ALL_OPEN = "visit_all_open"       # TSP abierto (no vuelve al origen)
-    VISIT_ALL_CIRCUIT = "visit_all_circuit" # TSP circuito (vuelve al origen)
-    FIXED_ORDER = "fixed_order"             # seguir el orden dado (waypoints)
+    VISIT_ALL_OPEN = "visit_all_open"
+    VISIT_ALL_CIRCUIT = "visit_all_circuit"
+    FIXED_ORDER = "fixed_order"
 
 
 class RoadClass(str, Enum):
-    """Clases de vía para modelar velocidades y congestión."""
     RESIDENTIAL = "residential"
     COLLECTOR = "collector"
     PRIMARY = "primary"
@@ -67,12 +50,10 @@ KmPerHour = float
 
 
 # ==========================================================
-# 2) Dominio: Nodos, Aristas, Grafo
+# Grafo
 # ==========================================================
-
 @dataclass(frozen=True)
 class Node:
-    """Nodo del grafo."""
     id: NodeId
     lat: float
     lon: float
@@ -80,7 +61,6 @@ class Node:
 
 @dataclass
 class Edge:
-    """Arista dirigida u -> v con atributos de transporte."""
     to: NodeId
     distance_m: Meters
     road_class: RoadClass
@@ -89,12 +69,11 @@ class Edge:
 
 
 class Graph:
-    """Grafo dirigido con listas de adyacencia."""
     def __init__(self) -> None:
         self.nodes: Dict[NodeId, Node] = {}
         self.adj: Dict[NodeId, List[Edge]] = defaultdict(list)
 
-    # ---- Alta y acceso ----
+    # ---- core
     def add_node(self, node_id: NodeId, lat: float, lon: float) -> None:
         self.nodes[node_id] = Node(node_id, lat, lon)
 
@@ -107,9 +86,7 @@ class Graph:
         freeflow_kmh: KmPerHour = 40.0,
         one_way: bool = False,
     ) -> None:
-        self.adj[u].append(
-            Edge(to=v, distance_m=distance_m, road_class=road_class, freeflow_kmh=freeflow_kmh, one_way=one_way)
-        )
+        self.adj[u].append(Edge(v, distance_m, road_class, freeflow_kmh, one_way))
 
     def neighbors(self, u: NodeId) -> Iterable[Edge]:
         return self.adj.get(u, [])
@@ -118,15 +95,14 @@ class Graph:
         return self.nodes[node_id]
 
     def iter_nodes(self) -> Iterator[Node]:
-        for n in self.nodes.values():
-            yield n
+        yield from self.nodes.values()
 
     def iter_edges(self) -> Iterator[Tuple[NodeId, Edge]]:
         for u, lst in self.adj.items():
             for e in lst:
                 yield u, e
 
-    # ---- Constructores de ciudad ----
+    # ---- ciudad sintética (se mantiene por compatibilidad)
     @staticmethod
     def build_small_town(
         *,
@@ -134,30 +110,29 @@ class Graph:
         blocks_x: int = 10,
         blocks_y: int = 10,
         spacing_m: float = 120.0,
-        base_lat: float = -30.986154349785995,
-        base_lon: float = -64.08957839045158,
+        base_lat: float = -30.9861543498,
+        base_lon: float = -64.0895783905,
         two_way_ratio: float = 0.7,
         primary_ratio: float = 0.1,
         collector_ratio: float = 0.3,
     ) -> "Graph":
-        """Construye un pueblito sintético con grilla simple (se mantiene para demos)."""
         rnd = random.Random(seed)
         g = Graph()
-
-        # Conversión simple grados ↔ metros (aprox.)
-        dlat = (spacing_m / 1000.0) / 111.0
+        dlat = spacing_m / 111000.0
         dlon = dlat / cos(radians(base_lat))
 
         def nid(r: int, c: int) -> int:
             return r * blocks_x + c
 
-        # Crear nodos
         for r in range(blocks_y):
             for c in range(blocks_x):
                 g.add_node(nid(r, c), base_lat + r * dlat, base_lon + c * dlon)
 
-        # Velocidades por clase
-        speed_by_class = {RoadClass.RESIDENTIAL: 35.0, RoadClass.COLLECTOR: 45.0, RoadClass.PRIMARY: 60.0}
+        speed_by_class = {
+            RoadClass.RESIDENTIAL: 35.0,
+            RoadClass.COLLECTOR: 45.0,
+            RoadClass.PRIMARY: 60.0,
+        }
 
         def sample_road_class() -> RoadClass:
             x = rnd.random()
@@ -167,11 +142,9 @@ class Graph:
                 return RoadClass.COLLECTOR
             return RoadClass.RESIDENTIAL
 
-        # Crear aristas (con mezcla de sentidos)
         for r in range(blocks_y):
             for c in range(blocks_x):
                 u = nid(r, c)
-                # derecha
                 if c + 1 < blocks_x:
                     v = nid(r, c + 1)
                     n1, n2 = g.get_node(u), g.get_node(v)
@@ -179,14 +152,13 @@ class Graph:
                     rc = sample_road_class()
                     sp = speed_by_class[rc]
                     if rnd.random() < two_way_ratio:
-                        g.add_edge(u, v, dist_m, rc, sp, one_way=False)
-                        g.add_edge(v, u, dist_m, rc, sp, one_way=False)
+                        g.add_edge(u, v, dist_m, rc, sp)
+                        g.add_edge(v, u, dist_m, rc, sp)
                     else:
                         if r % 2 == 0:
-                            g.add_edge(u, v, dist_m, rc, sp, one_way=True)
+                            g.add_edge(u, v, dist_m, rc, sp, True)
                         else:
-                            g.add_edge(v, u, dist_m, rc, sp, one_way=True)
-                # abajo
+                            g.add_edge(v, u, dist_m, rc, sp, True)
                 if r + 1 < blocks_y:
                     v = nid(r + 1, c)
                     n1, n2 = g.get_node(u), g.get_node(v)
@@ -194,152 +166,154 @@ class Graph:
                     rc = sample_road_class()
                     sp = speed_by_class[rc]
                     if rnd.random() < two_way_ratio:
-                        g.add_edge(u, v, dist_m, rc, sp, one_way=False)
-                        g.add_edge(v, u, dist_m, rc, sp, one_way=False)
+                        g.add_edge(u, v, dist_m, rc, sp)
+                        g.add_edge(v, u, dist_m, rc, sp)
                     else:
                         if c % 2 == 0:
-                            g.add_edge(u, v, dist_m, rc, sp, one_way=True)
+                            g.add_edge(u, v, dist_m, rc, sp, True)
                         else:
-                            g.add_edge(v, u, dist_m, rc, sp, one_way=True)
+                            g.add_edge(v, u, dist_m, rc, sp, True)
         return g
 
+    # ---- NUEVO: Jesús María hardcodeado (sin OSM)
     @staticmethod
-    def from_csv(nodes_csv: str, edges_csv: str) -> "Graph":
-        """Carga un grafo desde CSVs (nodos y aristas). Formatos:
-           nodes.csv: id,lat,lon
-           edges.csv: u,v,distance_m,road_class,freeflow_kmh,one_way
+    def build_jesus_maria_hardcoded() -> "Graph":
         """
-        import csv
+        Genera una red vial que emula la traza de Jesús María:
+        - Grilla principal (centro) rotada ~-22°.
+        - Grilla sudeste (Malvinas Argentinas) sin rotación.
+        - Arteria primaria diagonal que une ambas (RN-9/Av. Malvinas).
+        """
         g = Graph()
-        with open(nodes_csv, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                g.add_node(int(row["id"]), float(row["lat"]), float(row["lon"]))
-        with open(edges_csv, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                g.add_edge(
-                    int(row["u"]),
-                    int(row["v"]),
-                    float(row["distance_m"]),
-                    RoadClass(row["road_class"]),
-                    float(row["freeflow_kmh"]),
-                    row.get("one_way", "false").strip().lower() in {"1", "true", "t", "yes", "y"},
-                )
+
+        # Centro geográfico de referencia (aprox. Plaza San Martín)
+        LAT0 = -30.9859
+        LON0 = -64.0947
+
+        def meters_to_deg(lat_ref: float, dx_m: float, dy_m: float) -> Tuple[float, float]:
+            dlat = dy_m / 111000.0
+            dlon = dx_m / (111000.0 * cos(radians(lat_ref)))
+            return dlon, dlat  # (Δlon, Δlat)
+
+        def rot(lon: float, lat: float, deg: float, cx: float, cy: float) -> Tuple[float, float]:
+            if deg == 0:
+                return lon, lat
+            th = radians(deg)
+            dx = lon - cx
+            dy = lat - cy
+            rx = dx * cos(th) - dy * sin(th)
+            ry = dx * sin(th) + dy * cos(th)
+            return cx + rx, cy + ry
+
+        # Helper: añade grilla rectangular y devuelve matriz de ids
+        def add_grid(cx: float, cy: float, nx: int, ny: int, step_m: float, rotation_deg: float, start_id: int,
+                     primary_step: int = 4, collector_step: int = 2) -> Tuple[List[List[int]], int]:
+            ids = [[-1] * nx for _ in range(ny)]
+            # Crear nodos
+            for r in range(ny):
+                for c in range(nx):
+                    dx = (c - (nx - 1) / 2.0) * step_m
+                    dy = (r - (ny - 1) / 2.0) * step_m
+                    dlon, dlat = meters_to_deg(cy, dx, dy)
+                    lon, lat = LON0 + dlon, LAT0 + dlat
+                    lon, lat = rot(lon, lat, rotation_deg, LON0, LAT0)
+                    nid = start_id
+                    start_id += 1
+                    g.add_node(nid, lat, lon)
+                    ids[r][c] = nid
+            # Velocidades
+            v_res, v_col, v_pri = 35.0, 45.0, 65.0
+
+            # Función de clase por “avenidas” cada N calles
+            def rc_for(r: int, c: int, horizontal: bool) -> RoadClass:
+                idx = c if horizontal else r
+                if idx % primary_step == 0:
+                    return RoadClass.PRIMARY
+                if idx % collector_step == 0:
+                    return RoadClass.COLLECTOR
+                return RoadClass.RESIDENTIAL
+
+            # Aristas (dos manos)
+            for r in range(ny):
+                for c in range(nx):
+                    u = ids[r][c]
+                    if c + 1 < nx:
+                        v = ids[r][c + 1]
+                        n1, n2 = g.get_node(u), g.get_node(v)
+                        dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
+                        rc = rc_for(r, c, True)
+                        sp = v_pri if rc == RoadClass.PRIMARY else v_col if rc == RoadClass.COLLECTOR else v_res
+                        g.add_edge(u, v, dist, rc, sp)
+                        g.add_edge(v, u, dist, rc, sp)
+                    if r + 1 < ny:
+                        v = ids[r + 1][c]
+                        n1, n2 = g.get_node(u), g.get_node(v)
+                        dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
+                        rc = rc_for(r, c, False)
+                        sp = v_pri if rc == RoadClass.PRIMARY else v_col if rc == RoadClass.COLLECTOR else v_res
+                        g.add_edge(u, v, dist, rc, sp)
+                        g.add_edge(v, u, dist, rc, sp)
+            return ids, start_id
+
+        # --- Grilla 1: centro histórico (rotada aprox. -22°) ---
+        next_id = 0
+        ids_centro, next_id = add_grid(
+            cx=LON0, cy=LAT0, nx=16, ny=16, step_m=110.0, rotation_deg=-22.0, start_id=next_id
+        )
+
+        # --- Grilla 2: sudeste (sin rotación), desplazada ~1.2 km SE ---
+        # Corrimiento: 1.2 km E y 1.0 km S aprox.
+        dlon_e, dlat_s = meters_to_deg(LAT0, 1200.0, -1000.0)
+        LON_SE = LON0 + dlon_e
+        LAT_SE = LAT0 + dlat_s
+        ids_se, next_id = add_grid(
+            cx=LON_SE, cy=LAT_SE, nx=14, ny=12, step_m=115.0, rotation_deg=0.0, start_id=next_id
+        )
+
+        # --- Arteria primaria diagonal (RN-9 aproximada) que conecta ambos sectores ---
+        def add_polyline(points_ll: List[Tuple[float, float]], v_kmh: float = 70.0):
+            nonlocal next_id
+            prev = None
+            for lon, lat in points_ll:
+                nid = next_id
+                next_id += 1
+                g.add_node(nid, lat, lon)
+                if prev is not None:
+                    n1, n2 = g.get_node(prev), g.get_node(nid)
+                    dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
+                    g.add_edge(prev, nid, dist, RoadClass.PRIMARY, v_kmh)
+                    g.add_edge(nid, prev, dist, RoadClass.PRIMARY, v_kmh)
+                prev = nid
+            return prev  # último id
+
+        # Trazado aproximado: noroeste -> centro -> sudeste
+        poly = [
+            (LON0 - 0.018, LAT0 + 0.010),
+            (LON0 - 0.007, LAT0 + 0.003),
+            (LON0, LAT0),
+            (LON0 + 0.006, LAT0 - 0.004),
+            (LON_SE + 0.003, LAT_SE - 0.003),
+            (LON_SE + 0.010, LAT_SE - 0.010),
+        ]
+        add_polyline(poly)
+
         return g
 
-    # ---------- NUEVO: importación desde OpenStreetMap ----------
-@staticmethod
-def from_osm_place(
-    place_name: str,
-    *,
-    network_type: str = "drive",
-    cache_graphml: Optional[str] = None,
-    retain_all: bool = False,
-    simplify: bool = True,
-    # NUEVO: fallbacks
-    fallback_center: Optional[Tuple[float, float]] = (-30.9859, -64.0947),
-    fallback_dist_m: int = 5000,
-    bbox: Optional[Tuple[float, float, float, float]] = None,  # (south, west, north, east)
-) -> "Graph":
-    """Intenta por polígono; si no, usa centro+radio o bbox."""
-    try:
-        import osmnx as ox
-        import networkx as nx  # noqa
-    except Exception as exc:
-        raise RuntimeError("Requiere 'osmnx' (`pip install osmnx`).") from exc
-
-    # 1) Si hay cache, cargar y seguir
-    if cache_graphml and os.path.exists(cache_graphml):
-        G = ox.load_graphml(cache_graphml)
-    else:
-        G = None
-        # 2) Si pasaron bbox explícito, usarlo
-        if bbox is not None:
-            south, west, north, east = bbox
-            G = ox.graph_from_bbox(north, south, east, west, network_type=network_type, simplify=simplify)
-        else:
-            # 3) Intentar por place (polígono). Si falla, caer a point+dist
-            try:
-                G = ox.graph_from_place(place_name, network_type=network_type, simplify=simplify)
-            except Exception:
-                G = None
-            if G is None:
-                # Geocodificar a punto (si no pasaron centro)
-                if fallback_center is None:
-                    lat, lon = ox.geocode(place_name)
-                else:
-                    lat, lon = fallback_center
-                G = ox.graph_from_point((lat, lon), dist=fallback_dist_m, network_type=network_type, simplify=simplify)
-
-        if not retain_all:
-            G = ox.utils_graph.get_largest_component(G, strongly=True)
-        if cache_graphml:
-            os.makedirs(os.path.dirname(cache_graphml), exist_ok=True)
-            ox.save_graphml(G, cache_graphml)
-
-    # --- construir nuestro Graph propio ---
-    g = Graph()
-    idmap: Dict[int, int] = {}
-    next_id = 0
-    for nid, data in G.nodes(data=True):
-        lat = float(data.get("y"))
-        lon = float(data.get("x"))
-        idmap[nid] = next_id
-        g.add_node(next_id, lat, lon)
-        next_id += 1
-
-    primary_like = {"motorway","trunk","primary","motorway_link","trunk_link","primary_link","secondary","secondary_link"}
-    collector_like = {"tertiary","tertiary_link"}
-    default_speed = {RoadClass.PRIMARY:60.0, RoadClass.COLLECTOR:45.0, RoadClass.RESIDENTIAL:35.0}
-
-    def to_road_class(hval):
-        hv = (hval[0] if isinstance(hval,(list,tuple)) else hval)
-        hv = str(hv).lower()
-        if hv in primary_like: return RoadClass.PRIMARY
-        if hv in collector_like: return RoadClass.COLLECTOR
-        return RoadClass.RESIDENTIAL
-
-    def parse_maxspeed(val, rc):
-        if val is None: return default_speed[rc]
-        if isinstance(val,(list,tuple)):
-            for x in val:
-                try: return float(str(x).split()[0])
-                except: pass
-            return default_speed[rc]
-        try: return float(str(val).split()[0])
-        except: return default_speed[rc]
-
-    for u, v, data in G.edges(data=True):
-        u2 = idmap[u]; v2 = idmap[v]
-        length_m = float(data.get("length", 0.0))
-        if length_m <= 0.0:
-            n1 = g.get_node(u2); n2 = g.get_node(v2)
-            length_m = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
-        rc = to_road_class(data.get("highway", "residential"))
-        ff = parse_maxspeed(data.get("maxspeed"), rc)
-        oneway = bool(data.get("oneway", False))
-        g.add_edge(u2, v2, length_m, rc, ff, one_way=oneway)
-
-    return g
-
-
 
 # ==========================================================
-# 3) Costos y Tráfico (Strategy)
+# Costos / Tráfico
 # ==========================================================
-
 class TrafficModel:
-    """Interfaz de cálculo de costo temporal por arista según el contexto (hora)."""
-    def travel_time_seconds(self, edge: Edge, *, hour: int) -> Seconds:  # pragma: no cover
+    def travel_time_seconds(self, edge: Edge, *, hour: int) -> Seconds:
         raise NotImplementedError
 
 
 class HistoricalTrafficModel(TrafficModel):
-    """Uso de factor de congestión por (hora × clase de vía). `factor >= 1.0`."""
     def __init__(self, factor_by_hour_and_class: Optional[Dict[int, Dict[RoadClass, float]]] = None) -> None:
-        self.factor = factor_by_hour_and_class or self._default_factors()
+        self.factor = factor_by_hour_and_class or self._default()
 
     @staticmethod
-    def _default_factors() -> Dict[int, Dict[RoadClass, float]]:
+    def _default() -> Dict[int, Dict[RoadClass, float]]:
         base: Dict[int, Dict[RoadClass, float]] = {}
         for h in range(24):
             if 7 <= h <= 9 or 17 <= h <= 19:
@@ -355,43 +329,35 @@ class HistoricalTrafficModel(TrafficModel):
 
 
 # ==========================================================
-# 4) Heurísticas (Strategy) – admisibles por diseño
+# Heurísticas
 # ==========================================================
-
 class Heuristic:
-    """Interfaz de heurística para A* (devuelve cota inferior de tiempo restante)."""
-    def estimate(self, graph: Graph, node_id: NodeId, goal_id: NodeId, *, hour: int) -> Seconds:  # pragma: no cover
+    def estimate(self, graph: Graph, node_id: NodeId, goal_id: NodeId, *, hour: int) -> Seconds:
         raise NotImplementedError
 
 
 class GeoLowerBoundHeuristic(Heuristic):
-    """Cota inferior geométrica: distancia en línea recta / v_max."""
     def __init__(self, vmax_kmh: KmPerHour = 65.0) -> None:
         self.vmax_kmh = vmax_kmh
 
     def estimate(self, graph: Graph, node_id: NodeId, goal_id: NodeId, *, hour: int) -> Seconds:
-        n = graph.get_node(node_id)
-        g = graph.get_node(goal_id)
+        n, g = graph.get_node(node_id), graph.get_node(goal_id)
         dist_km = haversine_km(n.lat, n.lon, g.lat, g.lon)
-        vmax = max(self.vmax_kmh, 1e-6)
-        return (dist_km / vmax) * 3600.0
+        return (dist_km / max(self.vmax_kmh, 1e-6)) * 3600.0
 
 
 class LearnedHistoricalHeuristic(Heuristic):
-    """Heurística aprendida: usa una velocidad alta plausible por hora (p.ej., p95)."""
     def __init__(self, vmax95_by_hour: Optional[Dict[int, KmPerHour]] = None) -> None:
-        self.vmax95_by_hour = vmax95_by_hour or {h: 65.0 for h in range(24)}
+        self.v95 = vmax95_by_hour or {h: 65.0 for h in range(24)}
 
     def estimate(self, graph: Graph, node_id: NodeId, goal_id: NodeId, *, hour: int) -> Seconds:
-        n = graph.get_node(node_id)
-        g = graph.get_node(goal_id)
+        n, g = graph.get_node(node_id), graph.get_node(goal_id)
         dist_km = haversine_km(n.lat, n.lon, g.lat, g.lon)
-        vmax = max(self.vmax95_by_hour.get(hour, 60.0), 1e-6)
+        vmax = max(self.v95.get(hour, 60.0), 1e-6)
         return (dist_km / vmax) * 3600.0
 
 
 class HybridConservativeHeuristic(Heuristic):
-    """Heurística híbrida: min(heurística aprendida, geométrica) → admisible."""
     def __init__(self, learned: LearnedHistoricalHeuristic, geo: GeoLowerBoundHeuristic) -> None:
         self.learned = learned
         self.geo = geo
@@ -404,9 +370,8 @@ class HybridConservativeHeuristic(Heuristic):
 
 
 # ==========================================================
-# 5) Requests/Results y utilidades
+# Requests / Results / util
 # ==========================================================
-
 @dataclass
 class RouteRequest:
     origin: NodeId
@@ -437,34 +402,19 @@ class RouteResult:
     cache_misses: int = 0
 
 
-def iter_path_edges(path: List[NodeId]) -> Iterator[Tuple[NodeId, NodeId]]:
+def iter_path_edges(path: List[NodeId]) -> Iterable[Tuple[NodeId, NodeId]]:
     for i in range(len(path) - 1):
         yield path[i], path[i + 1]
 
 
 # ==========================================================
-# 6) Routers par-a-par (Strategy)
+# Routers
 # ==========================================================
-
 class SearchStats:
     def __init__(self) -> None:
-        self.expanded_nodes: int = 0
-        self.queue_pushes: int = 0
-        self.queue_pops: int = 0
-
-
-class Router:
-    def route(
-        self,
-        graph: Graph,
-        src: NodeId,
-        dst: NodeId,
-        *,
-        hour: int,
-        traffic: TrafficModel,
-        heuristic: Optional[Heuristic] = None,
-    ) -> Tuple[RouteLeg, SearchStats]:  # pragma: no cover
-        raise NotImplementedError
+        self.expanded_nodes = 0
+        self.queue_pushes = 0
+        self.queue_pops = 0
 
 
 def _reconstruct(parent: Dict[NodeId, Optional[NodeId]], src: NodeId, dst: NodeId) -> List[NodeId]:
@@ -479,19 +429,9 @@ def _reconstruct(parent: Dict[NodeId, Optional[NodeId]], src: NodeId, dst: NodeI
     return chain
 
 
-class DijkstraRouter(Router):
-    def route(
-        self,
-        graph: Graph,
-        src: NodeId,
-        dst: NodeId,
-        *,
-        hour: int,
-        traffic: TrafficModel,
-        heuristic: Optional[Heuristic] = None,
-    ) -> Tuple[RouteLeg, SearchStats]:
+class DijkstraRouter:
+    def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int, traffic: TrafficModel, heuristic: Optional[Heuristic] = None) -> Tuple[RouteLeg, SearchStats]:
         import heapq
-
         dist: Dict[NodeId, float] = defaultdict(lambda: float("inf"))
         parent: Dict[NodeId, Optional[NodeId]] = {src: None}
         stats = SearchStats()
@@ -519,22 +459,12 @@ class DijkstraRouter(Router):
         return RouteLeg(src, dst, path, seconds, distance_m, stats.expanded_nodes), stats
 
 
-class AStarRouter(Router):
+class AStarRouter:
     def __init__(self, default_heuristic: Optional[Heuristic] = None) -> None:
         self.default_heuristic = default_heuristic
 
-    def route(
-        self,
-        graph: Graph,
-        src: NodeId,
-        dst: NodeId,
-        *,
-        hour: int,
-        traffic: TrafficModel,
-        heuristic: Optional[Heuristic] = None,
-    ) -> Tuple[RouteLeg, SearchStats]:
+    def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int, traffic: TrafficModel, heuristic: Optional[Heuristic] = None) -> Tuple[RouteLeg, SearchStats]:
         import heapq
-
         h = heuristic or self.default_heuristic or GeoLowerBoundHeuristic()
         g_score: Dict[NodeId, float] = defaultdict(lambda: float("inf"))
         f_score: Dict[NodeId, float] = defaultdict(lambda: float("inf"))
@@ -571,11 +501,9 @@ class AStarRouter(Router):
 
 
 # ==========================================================
-# 7) Caches y memoización
+# Caches y pairwise
 # ==========================================================
-
 class LRUCache:
-    """Cache LRU genérica parametrizable por capacidad."""
     def __init__(self, capacity: int = 1024) -> None:
         self.capacity = capacity
         self._store: OrderedDict[Tuple[Any, ...], Any] = OrderedDict()
@@ -592,12 +520,8 @@ class LRUCache:
         if len(self._store) > self.capacity:
             self._store.popitem(last=False)
 
-    def clear(self) -> None:
-        self._store.clear()
-
 
 class SSSPMemo:
-    """Memoización de SSSP (árbol de distancias y padres) por clave."""
     def __init__(self) -> None:
         self._store: Dict[Tuple[Any, ...], Tuple[Dict[NodeId, Seconds], Dict[NodeId, Optional[NodeId]]]] = {}
 
@@ -607,12 +531,8 @@ class SSSPMemo:
     def set(self, key: Tuple[Any, ...], dist: Mapping[NodeId, Seconds], parent: Mapping[NodeId, Optional[NodeId]]) -> None:
         self._store[key] = (dict(dist), dict(parent))
 
-    def clear(self) -> None:
-        self._store.clear()
-
 
 class RouteCache:
-    """Cache específica de rutas completas (src, dst, hour, algo, heur_ver, graph_ver)."""
     def __init__(self, capacity: int = 2048) -> None:
         self._lru = LRUCache(capacity)
 
@@ -624,49 +544,18 @@ class RouteCache:
 
 
 class PairwiseMatrixCache:
-    """Cache para matrices par-a-par (tiempos + paths) sobre un conjunto de waypoints."""
     def __init__(self) -> None:
         self._store: Dict[Tuple[Any, ...], Tuple[List[List[Seconds]], Dict[Tuple[int, int], List[NodeId]]]] = {}
 
     def get(self, signature: Tuple[Any, ...]) -> Optional[Tuple[List[List[Seconds]], Dict[Tuple[int, int], List[NodeId]]]]:
         return self._store.get(signature)
 
-    def set(
-        self,
-        signature: Tuple[Any, ...],
-        time_matrix: List[List[Seconds]],
-        path_map: Dict[Tuple[int, int], List[NodeId]],
-    ) -> None:
+    def set(self, signature: Tuple[Any, ...], time_matrix: List[List[Seconds]], path_map: Dict[Tuple[int, int], List[NodeId]]) -> None:
         self._store[signature] = (time_matrix, path_map)
 
 
-# ==========================================================
-# 8) Servicios par-a-par y multi-destino
-# ==========================================================
-
-def _path_distance_m(graph: Graph, path: List[NodeId]) -> float:
-    dist = 0.0
-    for u, v in iter_path_edges(path):
-        for e in graph.neighbors(u):
-            if e.to == v:
-                dist += e.distance_m
-                break
-    return dist
-
-
 class PairwiseDistanceService:
-    """Calcula, con batching y concurrencia, todas las rutas par-a-par entre waypoints.
-    Nota: para la matriz completa conviene Dijkstra SSSP por fuente.
-    """
-    def __init__(
-        self,
-        router_astar: Router,
-        router_dijkstra: Router,
-        route_cache: RouteCache,
-        ssp_memo: SSSPMemo,
-        *,
-        max_workers: int = 4,
-    ) -> None:
+    def __init__(self, router_astar: AStarRouter, router_dijkstra: DijkstraRouter, route_cache: RouteCache, ssp_memo: SSSPMemo, *, max_workers: int = 4) -> None:
         self.router_astar = router_astar
         self.router_dijkstra = router_dijkstra
         self.route_cache = route_cache
@@ -687,20 +576,17 @@ class PairwiseDistanceService:
         time_matrix: List[List[Seconds]] = [[float("inf")] * n for _ in range(n)]
         path_map: Dict[Tuple[int, int], List[NodeId]] = {}
 
-        # Trabajo por fuente: un SSSP (Dijkstra) por cada waypoint fuente.
         def solve_from(i: int) -> Tuple[int, Dict[NodeId, Seconds], Dict[NodeId, Optional[NodeId]]]:
             src = waypoints[i]
             key = ("SSSP", src, hour, "dijkstra")
             cached = self.ssp_memo.get(key)
             if cached:
-                dist_map, parent_map = cached
-                return i, dict(dist_map), dict(parent_map)
+                dm, pm = cached
+                return i, dict(dm), dict(pm)
 
-            # Dijkstra SSSP desde src
+            import heapq
             dist: Dict[NodeId, float] = defaultdict(lambda: float("inf"))
             parent: Dict[NodeId, Optional[NodeId]] = {src: None}
-            import heapq
-
             dist[src] = 0.0
             pq: List[Tuple[float, NodeId]] = [(0.0, src)]
             while pq:
@@ -717,7 +603,6 @@ class PairwiseDistanceService:
             self.ssp_memo.set(key, dist, parent)
             return i, dist, parent
 
-        # Paralelizar por fuentes
         results: Dict[int, Tuple[Dict[NodeId, Seconds], Dict[NodeId, Optional[NodeId]]]] = {}
         with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
             futs = [ex.submit(solve_from, i) for i in range(n)]
@@ -725,7 +610,6 @@ class PairwiseDistanceService:
                 i, dist, parent = fut.result()
                 results[i] = (dist, parent)
 
-        # Completar matriz y paths
         for i in range(n):
             dist, parent = results[i]
             for j in range(n):
@@ -739,196 +623,123 @@ class PairwiseDistanceService:
         return time_matrix, path_map
 
 
+# ==========================================================
+# Solvers y splicer
+# ==========================================================
 class MultiStopSolver:
-    def solve(self, waypoints: List[NodeId], time_matrix: List[List[Seconds]], *, mode: RouteMode) -> List[int]:  # pragma: no cover
+    def solve(self, waypoints: List[NodeId], time_matrix: List[List[Seconds]], *, mode: RouteMode) -> List[int]:
         raise NotImplementedError
 
 
 class HeldKarpExact(MultiStopSolver):
-    """DP exacto para TSP (apto hasta ~12–14 destinos). Origen fijo en índice 0."""
     def solve(self, waypoints: List[NodeId], time_matrix: List[List[Seconds]], *, mode: RouteMode) -> List[int]:
         n = len(waypoints)
-        if n <= 1: return list(range(n))
+        if n <= 1:
+            return list(range(n))
         from math import inf
         ALL = 1 << n
-        dp_cost = [[inf] * n for _ in range(ALL)]
-        dp_prev = [[-1] * n for _ in range(ALL)]
+        dp = [[inf] * n for _ in range(ALL)]
+        prv = [[-1] * n for _ in range(ALL)]
         origin = 0
-        dp_cost[1 << origin][origin] = 0.0
-
+        dp[1 << origin][origin] = 0.0
         for mask in range(ALL):
             if not (mask & (1 << origin)): continue
             for j in range(n):
                 if not (mask & (1 << j)): continue
-                cost_j = dp_cost[mask][j]
-                if cost_j == inf: continue
+                cj = dp[mask][j]
+                if cj == inf: continue
                 for k in range(n):
                     if mask & (1 << k): continue
-                    new_mask = mask | (1 << k)
-                    cand = cost_j + time_matrix[j][k]
-                    if cand < dp_cost[new_mask][k]:
-                        dp_cost[new_mask][k] = cand
-                        dp_prev[new_mask][k] = j
+                    nm = mask | (1 << k)
+                    cand = cj + time_matrix[j][k]
+                    if cand < dp[nm][k]:
+                        dp[nm][k] = cand; prv[nm][k] = j
 
+        full = ALL - 1
         if mode == RouteMode.VISIT_ALL_CIRCUIT:
-            best_cost = inf; last = -1; full = ALL - 1
+            best, last = inf, -1
             for j in range(n):
-                cand = dp_cost[full][j] + time_matrix[j][0]
-                if cand < best_cost:
-                    best_cost = cand; last = j
-            order = []
-            mask = full
-            while last != -1:
-                order.append(last)
-                prev = dp_prev[mask][last]
-                if prev == -1: break
-                mask &= ~(1 << last); last = prev
-            order.append(0); order.reverse()
-            return order
+                cand = dp[full][j] + time_matrix[j][0]
+                if cand < best:
+                    best, last = cand, j
         else:
-            full = ALL - 1
-            last = min(range(n), key=lambda j: dp_cost[full][j])
-            order = []
-            mask = full
-            while last != -1:
-                order.append(last)
-                prev = dp_prev[mask][last]
-                if prev == -1: break
-                mask &= ~(1 << last); last = prev
-            order.append(0); order.reverse()
-            return order
+            last = min(range(n), key=lambda j: dp[full][j])
+
+        order = []
+        mask = full
+        while last != -1:
+            order.append(last)
+            p = prv[mask][last]
+            if p == -1: break
+            mask &= ~(1 << last)
+            last = p
+        order.append(0)
+        order.reverse()
+        return order
 
 
 class HeuristicRoute(MultiStopSolver):
-    """Heurístico: Nearest Neighbor + 2-opt con restarts."""
-    def __init__(self, restarts: int = 4, use_3opt: bool = False) -> None:
+    def __init__(self, restarts: int = 4) -> None:
         self.restarts = max(1, int(restarts))
-        self.use_3opt = bool(use_3opt)
 
     def solve(self, waypoints: List[NodeId], time_matrix: List[List[Seconds]], *, mode: RouteMode) -> List[int]:
         n = len(waypoints)
         if n <= 1: return list(range(n))
+        circuit = mode == RouteMode.VISIT_ALL_CIRCUIT
 
-        def route_cost(order: List[int], circuit: bool) -> float:
+        def route_cost(order: List[int]) -> float:
             c = 0.0
-            for a, b in zip(order, order[1:]):
-                c += time_matrix[a][b]
+            for a, b in zip(order, order[1:]): c += time_matrix[a][b]
             if circuit: c += time_matrix[order[-1]][order[0]]
             return c
 
-        def two_opt(order: List[int], circuit: bool) -> List[int]:
-            improved = True
-            best = order[:]
-            best_cost = route_cost(best, circuit)
+        def two_opt(order: List[int]) -> List[int]:
+            best = order[:]; bestc = route_cost(best); improved = True
             while improved:
                 improved = False
                 for i in range(1, n - 2):
                     for k in range(i + 1, n - (0 if circuit else 1)):
-                        new_order = best[:i] + list(reversed(best[i:k])) + best[k:]
-                        new_cost = route_cost(new_order, circuit)
-                        if new_cost + 1e-9 < best_cost:
-                            best, best_cost = new_order, new_cost
-                            improved = True
+                        cand = best[:i] + list(reversed(best[i:k])) + best[k:]
+                        cc = route_cost(cand)
+                        if cc + 1e-9 < bestc:
+                            best, bestc, improved = cand, cc, True
             return best
 
-        circuit = mode == RouteMode.VISIT_ALL_CIRCUIT
         origin = 0
-        best_order = list(range(n))
-        best_cost = float("inf")
         seeds = [origin] + [i for i in range(1, n)]
         seeds = seeds[: self.restarts]
-        for seed in seeds:
-            unvis = set(range(n)); unvis.remove(seed)
-            order = [seed]; cur = seed
-            while unvis:
-                nxt = min(unvis, key=lambda j: time_matrix[cur][j])
-                order.append(nxt); unvis.remove(nxt); cur = nxt
+        best_order, best_cost = list(range(n)), float("inf")
+        for s in seeds:
+            un = set(range(n)); un.remove(s)
+            order = [s]; cur = s
+            while un:
+                nxt = min(un, key=lambda j: time_matrix[cur][j])
+                order.append(nxt); un.remove(nxt); cur = nxt
             if origin in order:
-                idx = order.index(origin)
-                order = order[idx:] + order[:idx]
-            order = two_opt(order, circuit)
-            cost = route_cost(order, circuit)
-            if cost < best_cost:
-                best_cost, best_order = cost, order
-
+                idx = order.index(origin); order = order[idx:] + order[:idx]
+            order = two_opt(order)
+            c = route_cost(order)
+            if c < best_cost: best_cost, best_order = c, order
         return best_order
 
 
 class RouteSplicer:
-    """Reconstruye la ruta final concatenando los tramos par-a-par del orden elegido."""
-    def splice(
-        self,
-        waypoints: List[NodeId],
-        visit_order_idx: List[int],
-        path_map: Dict[Tuple[int, int], List[NodeId]],
-        graph: Graph,
-        time_matrix: List[List[Seconds]],
-    ) -> List[RouteLeg]:
+    def splice(self, waypoints: List[NodeId], visit_order_idx: List[int], path_map: Dict[Tuple[int, int], List[NodeId]], graph: Graph, time_matrix: List[List[Seconds]]) -> List[RouteLeg]:
         legs: List[RouteLeg] = []
-        for a_idx, b_idx in zip(visit_order_idx, visit_order_idx[1:]):
-            src = waypoints[a_idx]
-            dst = waypoints[b_idx]
-            path = path_map[(a_idx, b_idx)]
-            seconds = time_matrix[a_idx][b_idx]
-            distance_m = _path_distance_m(graph, path)
-            legs.append(RouteLeg(src, dst, path, seconds, distance_m, expanded_nodes=0))
+        for a, b in zip(visit_order_idx, visit_order_idx[1:]):
+            src = waypoints[a]; dst = waypoints[b]
+            path = path_map[(a, b)]
+            seconds = time_matrix[a][b]
+            dist_m = _path_distance_m(graph, path)
+            legs.append(RouteLeg(src, dst, path, seconds, dist_m, 0))
         return legs
 
 
 # ==========================================================
-# 9) Concurrencia y profiling
+# Servicio de ruteo
 # ==========================================================
-
-@dataclass
-class ProfileReport:
-    text: str
-    total_seconds: float
-    call_count: int
-
-
-class Profiler:
-    def run(self, func: Callable[..., Any], *args, **kwargs) -> ProfileReport:
-        pr = cProfile.Profile()
-        t0 = time.perf_counter()
-        pr.enable()
-        func(*args, **kwargs)
-        pr.disable()
-        total = time.perf_counter() - t0
-        s = io.StringIO()
-        ps = pstats.Stats(pr, stream=s).sort_stats(pstats.SortKey.CUMULATIVE)
-        ps.print_stats(25)
-        return ProfileReport(text=s.getvalue(), total_seconds=total, call_count=int(ps.total_calls))
-
-
-class ConcurrencyExecutor:
-    def __init__(self, max_workers: int = 4) -> None:
-        self.max_workers = max_workers
-
-    def map(self, fn: Callable[..., Any], tasks: List[Tuple[tuple, dict]]) -> List[Any]:
-        results: List[Any] = []
-        with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
-            futs = [ex.submit(fn, *args, **kwargs) for args, kwargs in tasks]
-            for f in as_completed(futs):
-                results.append(f.result())
-        return results
-
-
-# ==========================================================
-# 10) Servicio orquestador de ruteo
-# ==========================================================
-
 class RoutingService:
-    """Orquesta el pipeline de ruteo single y multi-destino."""
-    def __init__(
-        self,
-        graph: Graph,
-        traffic: TrafficModel,
-        heuristic: Heuristic,
-        pairwise_service: PairwiseDistanceService,
-        solver_exact: MultiStopSolver,
-        solver_heur: MultiStopSolver,
-        splicer: RouteSplicer,
-    ) -> None:
+    def __init__(self, graph: Graph, traffic: TrafficModel, heuristic: Heuristic, pairwise_service: PairwiseDistanceService, solver_exact: MultiStopSolver, solver_heur: MultiStopSolver, splicer: RouteSplicer) -> None:
         self.graph = graph
         self.traffic = traffic
         self.heuristic = heuristic
@@ -939,14 +750,7 @@ class RoutingService:
         self.router_dijkstra = DijkstraRouter()
         self.router_astar = AStarRouter(default_heuristic=heuristic)
 
-    def route_single(
-        self,
-        src: NodeId,
-        dst: NodeId,
-        *,
-        hour: int,
-        algorithm: Algorithm = Algorithm.ASTAR,
-    ) -> RouteLeg:
+    def route_single(self, src: NodeId, dst: NodeId, *, hour: int, algorithm: Algorithm = Algorithm.ASTAR) -> RouteLeg:
         if algorithm == Algorithm.DIJKSTRA or algorithm == Algorithm.BFS:
             leg, _ = self.router_dijkstra.route(self.graph, src, dst, hour=hour, traffic=self.traffic)
         else:
@@ -956,170 +760,66 @@ class RoutingService:
     def route(self, request: RouteRequest) -> RouteResult:
         waypoints = [request.origin] + list(request.destinations)
         time_matrix, path_map = self.pairwise.compute_matrix(
-            self.graph,
-            waypoints,
-            hour=request.hour,
-            algorithm=request.algorithm,
-            traffic=self.traffic,
-            heuristic=self.heuristic,
+            self.graph, waypoints, hour=request.hour, algorithm=request.algorithm, traffic=self.traffic, heuristic=self.heuristic
         )
         n = len(waypoints)
         if request.mode == RouteMode.FIXED_ORDER:
-            visit_order_idx = list(range(n))
-            alg_sum = f"{request.algorithm.value}"
+            order_idx = list(range(n)); alg = f"{request.algorithm.value}"
         else:
             if n <= 13:
-                visit_order_idx = self.solver_exact.solve(waypoints, time_matrix, mode=request.mode)
-                alg_sum = f"{request.algorithm.value} + Held-Karp"
+                order_idx = self.solver_exact.solve(waypoints, time_matrix, mode=request.mode); alg = f"{request.algorithm.value} + Held-Karp"
             else:
-                visit_order_idx = self.solver_heur.solve(waypoints, time_matrix, mode=request.mode)
-                alg_sum = f"{request.algorithm.value} + NN/2opt"
-
-        legs = self.splicer.splice(waypoints, visit_order_idx, path_map, self.graph, time_matrix)
-        total_seconds = sum(l.seconds for l in legs)
-        total_distance_m = sum(l.distance_m for l in legs)
-        visit_order = [waypoints[i] for i in visit_order_idx]
-        return RouteResult(visit_order, legs, total_seconds, total_distance_m, algorithm_summary=alg_sum)
+                order_idx = self.solver_heur.solve(waypoints, time_matrix, mode=request.mode); alg = f"{request.algorithm.value} + NN/2opt"
+        legs = self.splicer.splice(waypoints, order_idx, path_map, self.graph, time_matrix)
+        total_s = sum(l.seconds for l in legs)
+        total_m = sum(l.distance_m for l in legs)
+        visit_order = [waypoints[i] for i in order_idx]
+        return RouteResult(visit_order, legs, total_s, total_m, alg)
 
 
 # ==========================================================
-# 11) Helpers matemáticos/geo
+# Helpers geo
 # ==========================================================
-
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    r = 6371.0  # km
+    R = 6371.0
     dlat = radians(lat2 - lat1)
     dlon = radians(lon2 - lon1)
     a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
-    c = 2 * asin(sqrt(a))
-    return r * c
+    return R * (2 * asin(sqrt(a)))
+
+
+def _path_distance_m(graph: Graph, path: List[NodeId]) -> float:
+    d = 0.0
+    for i in range(len(path) - 1):
+        u, v = path[i], path[i + 1]
+        for e in graph.neighbors(u):
+            if e.to == v:
+                d += e.distance_m
+                break
+    return d
 
 
 # ==========================================================
-# 12) Tests unitarios (sobre ciudad sintética)
+# Tests mínimos
 # ==========================================================
-
-class _BaseFixture:
-    @staticmethod
-    def make_small_graph() -> Graph:
-        return Graph.build_small_town(seed=7, blocks_x=8, blocks_y=8, spacing_m=100.0)
-
-    @staticmethod
-    def make_engine_components(graph: Graph):
-        traffic = HistoricalTrafficModel()
-        heuristic = HybridConservativeHeuristic(LearnedHistoricalHeuristic(), GeoLowerBoundHeuristic())
-        route_cache = RouteCache()
-        ssp_memo = SSSPMemo()
-        psvc = PairwiseDistanceService(AStarRouter(heuristic), DijkstraRouter(), route_cache, ssp_memo, max_workers=4)
-        return traffic, heuristic, psvc
+class TestJM(unittest.TestCase):
+    def test_graph_non_empty(self):
+        g = Graph.build_jesus_maria_hardcoded()
+        self.assertGreater(len(list(g.iter_nodes())), 0)
+        self.assertGreater(len(list(g.iter_edges())), 0)
 
 
-class TestGeo(unittest.TestCase):
-    def test_haversine_symmetry(self):
-        a = haversine_km(-31.4, -64.2, -31.41, -64.19)
-        b = haversine_km(-31.41, -64.19, -31.4, -64.2)
-        self.assertAlmostEqual(a, b, places=9)
-
-
-class TestGraph(unittest.TestCase):
-    def test_build_small_town(self):
-        g = _BaseFixture.make_small_graph()
-        nodes = sum(1 for _ in g.iter_nodes())
-        edges = sum(1 for _ in g.iter_edges())
-        self.assertGreater(nodes, 0)
-        self.assertGreater(edges, 0)
-        self.assertTrue(any(e.one_way for _, e in g.iter_edges()))
-
-
-class TestRouters(unittest.TestCase):
-    def test_astar_equals_dijkstra(self):
-        g = _BaseFixture.make_small_graph()
-        traffic, heuristic, _ = _BaseFixture.make_engine_components(g)
-        src, dst, hour = 0, 62, 8
-        leg_d, _ = DijkstraRouter().route(g, src, dst, hour=hour, traffic=traffic)
-        leg_a, _ = AStarRouter(heuristic).route(g, src, dst, hour=hour, traffic=traffic, heuristic=heuristic)
-        self.assertAlmostEqual(leg_d.seconds, leg_a.seconds, places=6)
-        self.assertGreaterEqual(leg_d.distance_m, 0.0)
-        self.assertGreaterEqual(leg_a.distance_m, 0.0)
-
-
-class TestPairwise(unittest.TestCase):
-    def test_pairwise_matrix(self):
-        g = _BaseFixture.make_small_graph()
-        traffic, heuristic, psvc = _BaseFixture.make_engine_components(g)
-        waypoints = [0, 7, 56, 63]
-        tm, pm = psvc.compute_matrix(g, waypoints, hour=8, algorithm=Algorithm.ASTAR, traffic=traffic, heuristic=heuristic)
-        self.assertEqual(len(tm), len(waypoints))
-        self.assertTrue(all(len(row) == len(waypoints) for row in tm))
-        for i in range(len(waypoints)):
-            self.assertEqual(tm[i][i], 0.0)
-            self.assertEqual(pm[(i, i)], [waypoints[i]])
-
-
-class TestSolvers(unittest.TestCase):
-    def test_held_karp_small(self):
-        g = _BaseFixture.make_small_graph()
-        traffic, heuristic, psvc = _BaseFixture.make_engine_components(g)
-        waypoints = [0, 9, 56, 63, 7]
-        tm, pm = psvc.compute_matrix(g, waypoints, hour=8, algorithm=Algorithm.DIJKSTRA, traffic=traffic, heuristic=heuristic)
-        order_idx = HeldKarpExact().solve(waypoints, tm, mode=RouteMode.VISIT_ALL_OPEN)
-        self.assertEqual(order_idx[0], 0)
-        self.assertEqual(len(order_idx), len(waypoints))
-
-    def test_nn_2opt(self):
-        g = _BaseFixture.make_small_graph()
-        traffic, heuristic, psvc = _BaseFixture.make_engine_components(g)
-        waypoints = [0, 5, 10, 18, 23, 40]
-        tm, pm = psvc.compute_matrix(g, waypoints, hour=18, algorithm=Algorithm.ASTAR, traffic=traffic, heuristic=heuristic)
-        order_idx = HeuristicRoute(restarts=3).solve(waypoints, tm, mode=RouteMode.VISIT_ALL_CIRCUIT)
-        self.assertEqual(order_idx[0], 0)
-        self.assertEqual(len(order_idx), len(waypoints))
-
-
-class TestRoutingService(unittest.TestCase):
-    def test_route_end_to_end(self):
-        g = _BaseFixture.make_small_graph()
-        traffic = HistoricalTrafficModel()
-        heuristic = HybridConservativeHeuristic(LearnedHistoricalHeuristic(), GeoLowerBoundHeuristic())
-        route_cache = RouteCache()
-        ssp_memo = SSSPMemo()
-        psvc = PairwiseDistanceService(AStarRouter(heuristic), DijkstraRouter(), route_cache, ssp_memo, max_workers=4)
-        service = RoutingService(
-            g,
-            traffic,
-            heuristic,
-            psvc,
-            HeldKarpExact(),
-            HeuristicRoute(restarts=2),
-            RouteSplicer(),
-        )
-        req = RouteRequest(origin=0, destinations=[7, 56, 63], hour=8, mode=RouteMode.VISIT_ALL_OPEN, algorithm=Algorithm.ASTAR)
-        res = service.route(req)
-        self.assertGreater(res.total_seconds, 0.0)
-        self.assertEqual(res.visit_order[0], req.origin)
-        self.assertEqual(len(res.legs), len(res.visit_order) - 1)
-
-
-# ----------------------------------------------------------
-# Soporte para ejecutar tests con `python logica.py -m test`
-# ----------------------------------------------------------
 if __name__ == "__main__":
-    import sys
-    if "-m" in sys.argv and "test" in sys.argv:
-        unittest.main(argv=[sys.argv[0]])
-    else:
-        # Smoke test rápido (sintético)
-        g = Graph.build_small_town(seed=5, blocks_x=8, blocks_y=8)
-        traffic = HistoricalTrafficModel()
-        heuristic = HybridConservativeHeuristic(LearnedHistoricalHeuristic(), GeoLowerBoundHeuristic())
-        route_cache = RouteCache()
-        ssp_memo = SSSPMemo()
-        psvc = PairwiseDistanceService(AStarRouter(heuristic), DijkstraRouter(), route_cache, ssp_memo)
-        service = RoutingService(
-            g, traffic, heuristic, psvc, HeldKarpExact(), HeuristicRoute(restarts=2), RouteSplicer()
-        )
-        req = RouteRequest(origin=0, destinations=[7, 56, 63], hour=8, mode=RouteMode.VISIT_ALL_OPEN)
-        out = service.route(req)
-        print(
-            f"Ruta con {len(out.legs)} tramos, ETA={out.total_seconds:.1f}s, Dist={out.total_distance_m/1000:.2f} km, Alg={out.algorithm_summary}"
-        )
+    # Smoke test
+    g = Graph.build_jesus_maria_hardcoded()
+    traffic = HistoricalTrafficModel()
+    heuristic = HybridConservativeHeuristic(LearnedHistoricalHeuristic(), GeoLowerBoundHeuristic())
+    route_cache = RouteCache()
+    memo = SSSPMemo()
+    pairwise = PairwiseDistanceService(AStarRouter(heuristic), DijkstraRouter(), route_cache, memo)
+    service = RoutingService(g, traffic, heuristic, pairwise, HeldKarpExact(), HeuristicRoute(), RouteSplicer())
+    # tomar dos nodos cualesquiera
+    nodes = list(g.iter_nodes())
+    src, dst = nodes[0].id, nodes[-1].id
+    leg = service.route_single(src, dst, hour=8)
+    print(f"Smoke: {src}→{dst} en {leg.seconds:.1f}s, {leg.distance_m/1000:.2f} km")

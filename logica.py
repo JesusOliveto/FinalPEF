@@ -1,15 +1,13 @@
 """
 logica.py — Motor de ruteo multi-destino para ciudad tipo "pueblito" (PEF 2025)
 
-- Grafo dirigido con calles de uno y dos sentidos.
-- Costos dependientes de la hora (tráfico histórico por clase de vía).
-- Ruteo par-a-par (Dijkstra / A*) con heurística admisible (geométrica + aprendida).
-- Multi-destino (TSP/waypoints): Held-Karp (exacto) y heurístico (NN + 2-opt).
-- Batching para matriz par-a-par, memoización SSSP, caches LRU, concurrencia y profiling.
-- Generadores para iterar caminos sin materializar estructuras enormes.
-- Incluye tests unitarios (unittest) ejecutables con `python logica.py -m test` o `pytest`.
+NOVEDADES:
+- Graph.from_osm_place(): importa una red vial real desde OpenStreetMap usando osmnx.
+- Mapeo de highway OSM -> RoadClass con velocidades libres (usa maxspeed si existe).
+- Resto del motor (A*, Dijkstra, matriz par-a-par, Held-Karp, NN+2opt) se mantiene.
 
-Nota: Este módulo está pensado para ser consumido por un front (p. ej., Streamlit) en un archivo aparte.
+Si no tenés osmnx instalado o no hay Internet, la app puede seguir usando
+Graph.build_small_town() (ciudad sintética).
 """
 from __future__ import annotations
 
@@ -35,6 +33,7 @@ import io
 import random
 import time
 import unittest
+import os
 
 # ==========================================================
 # 1) Enumeraciones y alias de tipos
@@ -42,7 +41,6 @@ import unittest
 
 class Algorithm(str, Enum):
     """Algoritmos disponibles para ruteo par-a-par."""
-
     ASTAR = "astar"
     DIJKSTRA = "dijkstra"
     BFS = "bfs"  # educativo; en este motor se resuelve como Dijkstra costo=tiempo
@@ -50,15 +48,13 @@ class Algorithm(str, Enum):
 
 class RouteMode(str, Enum):
     """Modos de ruteo multi-destino."""
-
-    VISIT_ALL_OPEN = "visit_all_open"  # TSP abierto (no vuelve al origen)
-    VISIT_ALL_CIRCUIT = "visit_all_circuit"  # TSP circuito (vuelve al origen)
-    FIXED_ORDER = "fixed_order"  # seguir el orden dado (waypoints)
+    VISIT_ALL_OPEN = "visit_all_open"       # TSP abierto (no vuelve al origen)
+    VISIT_ALL_CIRCUIT = "visit_all_circuit" # TSP circuito (vuelve al origen)
+    FIXED_ORDER = "fixed_order"             # seguir el orden dado (waypoints)
 
 
 class RoadClass(str, Enum):
     """Clases de vía para modelar velocidades y congestión."""
-
     RESIDENTIAL = "residential"
     COLLECTOR = "collector"
     PRIMARY = "primary"
@@ -74,17 +70,9 @@ KmPerHour = float
 # 2) Dominio: Nodos, Aristas, Grafo
 # ==========================================================
 
-
 @dataclass(frozen=True)
 class Node:
-    """Nodo del grafo.
-
-    Args:
-        id: identificador único.
-        lat: latitud (grados decimales).
-        lon: longitud (grados decimales).
-    """
-
+    """Nodo del grafo."""
     id: NodeId
     lat: float
     lon: float
@@ -92,16 +80,7 @@ class Node:
 
 @dataclass
 class Edge:
-    """Arista dirigida u -> v con atributos de transporte.
-
-    Args:
-        to: id del nodo destino.
-        distance_m: distancia en metros.
-        road_class: clase de vía (afecta velocidades/horarios).
-        freeflow_kmh: velocidad libre de congestión (km/h).
-        one_way: True si el segmento es de un solo sentido (esta arista lo respeta).
-    """
-
+    """Arista dirigida u -> v con atributos de transporte."""
     to: NodeId
     distance_m: Meters
     road_class: RoadClass
@@ -110,21 +89,13 @@ class Edge:
 
 
 class Graph:
-    """Grafo dirigido con listas de adyacencia.
-
-    Responsabilidades:
-        - Gestionar nodos/aristas.
-        - Entregar vecinos eficientemente.
-        - Proveer constructores de ciudad simulada ("pueblito").
-    """
-
+    """Grafo dirigido con listas de adyacencia."""
     def __init__(self) -> None:
         self.nodes: Dict[NodeId, Node] = {}
         self.adj: Dict[NodeId, List[Edge]] = defaultdict(list)
 
     # ---- Alta y acceso ----
     def add_node(self, node_id: NodeId, lat: float, lon: float) -> None:
-        """Agrega un nodo al grafo."""
         self.nodes[node_id] = Node(node_id, lat, lon)
 
     def add_edge(
@@ -136,26 +107,21 @@ class Graph:
         freeflow_kmh: KmPerHour = 40.0,
         one_way: bool = False,
     ) -> None:
-        """Agrega una arista dirigida u -> v con atributos de transporte."""
         self.adj[u].append(
             Edge(to=v, distance_m=distance_m, road_class=road_class, freeflow_kmh=freeflow_kmh, one_way=one_way)
         )
 
     def neighbors(self, u: NodeId) -> Iterable[Edge]:
-        """Itera aristas salientes desde `u` (generador/iterable)."""
         return self.adj.get(u, [])
 
     def get_node(self, node_id: NodeId) -> Node:
-        """Obtiene un nodo por id."""
         return self.nodes[node_id]
 
     def iter_nodes(self) -> Iterator[Node]:
-        """Generador de todos los nodos."""
         for n in self.nodes.values():
             yield n
 
     def iter_edges(self) -> Iterator[Tuple[NodeId, Edge]]:
-        """Generador de todas las aristas (u, Edge(u->v))."""
         for u, lst in self.adj.items():
             for e in lst:
                 yield u, e
@@ -174,14 +140,7 @@ class Graph:
         primary_ratio: float = 0.1,
         collector_ratio: float = 0.3,
     ) -> "Graph":
-        """Construye un "pueblito" reproducible con plaza central, grilla y mezcla de sentidos.
-
-        Reglas:
-          - Nodos en grilla (blocks_y x blocks_x).
-          - Aristas horizontales y verticales.
-          - Algunas calles de un solo sentido (patrón alternado y aleatoriedad controlada).
-          - Clases viales con distintas velocidades libres.
-        """
+        """Construye un pueblito sintético con grilla simple (se mantiene para demos)."""
         rnd = random.Random(seed)
         g = Graph()
 
@@ -223,7 +182,6 @@ class Graph:
                         g.add_edge(u, v, dist_m, rc, sp, one_way=False)
                         g.add_edge(v, u, dist_m, rc, sp, one_way=False)
                     else:
-                        # patrón alternado por fila
                         if r % 2 == 0:
                             g.add_edge(u, v, dist_m, rc, sp, one_way=True)
                         else:
@@ -239,7 +197,6 @@ class Graph:
                         g.add_edge(u, v, dist_m, rc, sp, one_way=False)
                         g.add_edge(v, u, dist_m, rc, sp, one_way=False)
                     else:
-                        # patrón alternado por columna
                         if c % 2 == 0:
                             g.add_edge(u, v, dist_m, rc, sp, one_way=True)
                         else:
@@ -248,14 +205,11 @@ class Graph:
 
     @staticmethod
     def from_csv(nodes_csv: str, edges_csv: str) -> "Graph":
-        """Carga un grafo desde CSVs (nodos y aristas) exportados de una ciudad real.
-
-        Formatos esperados:
-            nodes.csv: id,lat,lon
-            edges.csv: u,v,distance_m,road_class,freeflow_kmh,one_way
+        """Carga un grafo desde CSVs (nodos y aristas). Formatos:
+           nodes.csv: id,lat,lon
+           edges.csv: u,v,distance_m,road_class,freeflow_kmh,one_way
         """
         import csv
-
         g = Graph()
         with open(nodes_csv, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
@@ -272,25 +226,128 @@ class Graph:
                 )
         return g
 
+    # ---------- NUEVO: importación desde OpenStreetMap ----------
+    @staticmethod
+    def from_osm_place(
+        place_name: str,
+        *,
+        network_type: str = "drive",
+        cache_graphml: Optional[str] = None,
+        retain_all: bool = False,
+        simplify: bool = True,
+    ) -> "Graph":
+        """Construye un Graph desde un lugar OSM (e.g., 'Jesús María, Córdoba, Argentina').
+
+        Requiere `osmnx`. Si `cache_graphml` existe, se carga desde ahí; si no, se descarga
+        y guarda en ese path (si fue provisto).
+
+        - network_type: 'drive' trae calles transitables.
+        - retain_all: si False, se queda con la componente más grande.
+        """
+        try:
+            import osmnx as ox
+            import networkx as nx  # noqa: F401 (solo for typing/side effects)
+        except Exception as exc:
+            raise RuntimeError(
+                "Este modo requiere el paquete 'osmnx'. Instalalo con `pip install osmnx`."
+            ) from exc
+
+        if cache_graphml and os.path.exists(cache_graphml):
+            G = ox.load_graphml(cache_graphml)
+        else:
+            G = ox.graph_from_place(place_name, network_type=network_type, simplify=simplify)
+            if not retain_all:
+                G = ox.utils_graph.get_largest_component(G, strongly=True)
+            if cache_graphml:
+                os.makedirs(os.path.dirname(cache_graphml), exist_ok=True)
+                ox.save_graphml(G, cache_graphml)
+
+        # Asegurar CRS geográfico (lat/lon)
+        if hasattr(G, "graph") and G.graph.get("crs") is None:
+            # osmnx moderno ya retorna WGS84; por si acaso
+            G = ox.project_graph(G, to_crs="EPSG:4326")
+
+        # Mapeo de highway -> clase y velocidad por defecto
+        primary_like = {
+            "motorway", "trunk", "primary", "motorway_link", "trunk_link", "primary_link", "secondary", "secondary_link"
+        }
+        collector_like = {"tertiary", "tertiary_link"}
+        # resto -> residential
+
+        default_speed: Dict[RoadClass, float] = {
+            RoadClass.PRIMARY: 60.0,
+            RoadClass.COLLECTOR: 45.0,
+            RoadClass.RESIDENTIAL: 35.0,
+        }
+
+        def to_road_class(highway_val: Any) -> RoadClass:
+            # highway puede ser str o list
+            if isinstance(highway_val, (list, tuple)):
+                hv = str(highway_val[0]).lower()
+            else:
+                hv = str(highway_val).lower()
+            if hv in primary_like:
+                return RoadClass.PRIMARY
+            if hv in collector_like:
+                return RoadClass.COLLECTOR
+            return RoadClass.RESIDENTIAL
+
+        def parse_maxspeed(val: Any, rc: RoadClass) -> float:
+            # maxspeed puede ser "60", "60 km/h", ['40', '60'], etc.
+            if val is None:
+                return default_speed[rc]
+            if isinstance(val, (list, tuple)):
+                for x in val:
+                    try:
+                        return float(str(x).split()[0])
+                    except Exception:
+                        continue
+                return default_speed[rc]
+            try:
+                return float(str(val).split()[0])
+            except Exception:
+                return default_speed[rc]
+
+        # Mapear ids OSM -> ids internos contiguos
+        g = Graph()
+        idmap: Dict[int, int] = {}
+        next_id = 0
+        for nid, data in G.nodes(data=True):
+            lat = float(data.get("y"))
+            lon = float(data.get("x"))
+            idmap[nid] = next_id
+            g.add_node(next_id, lat, lon)
+            next_id += 1
+
+        # Crear edges dirigidos respetando oneway y longitudes
+        for u, v, data in G.edges(data=True):
+            u2 = idmap[u]; v2 = idmap[v]
+            length_m = float(data.get("length", 0.0))
+            if length_m <= 0.0:
+                n1 = g.get_node(u2); n2 = g.get_node(v2)
+                length_m = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
+
+            rc = to_road_class(data.get("highway", "residential"))
+            ff = parse_maxspeed(data.get("maxspeed"), rc)
+            oneway = bool(data.get("oneway", False))
+            # En el grafo dirigido de osmnx ya están las direcciones correctas; marcamos el flag
+            g.add_edge(u2, v2, length_m, rc, ff, one_way=oneway)
+
+        return g
+
 
 # ==========================================================
 # 3) Costos y Tráfico (Strategy)
 # ==========================================================
 
-
 class TrafficModel:
     """Interfaz de cálculo de costo temporal por arista según el contexto (hora)."""
-
-    def travel_time_seconds(self, edge: Edge, *, hour: int) -> Seconds:  # pragma: no cover - interfaz
+    def travel_time_seconds(self, edge: Edge, *, hour: int) -> Seconds:  # pragma: no cover
         raise NotImplementedError
 
 
 class HistoricalTrafficModel(TrafficModel):
-    """Uso de factor de congestión por (hora × clase de vía).
-
-    `factor >= 1.0` (1.0 == free-flow). Se aplica sobre el tiempo base (distancia / freeflow_kmh).
-    """
-
+    """Uso de factor de congestión por (hora × clase de vía). `factor >= 1.0`."""
     def __init__(self, factor_by_hour_and_class: Optional[Dict[int, Dict[RoadClass, float]]] = None) -> None:
         self.factor = factor_by_hour_and_class or self._default_factors()
 
@@ -314,20 +371,14 @@ class HistoricalTrafficModel(TrafficModel):
 # 4) Heurísticas (Strategy) – admisibles por diseño
 # ==========================================================
 
-
 class Heuristic:
     """Interfaz de heurística para A* (devuelve cota inferior de tiempo restante)."""
-
     def estimate(self, graph: Graph, node_id: NodeId, goal_id: NodeId, *, hour: int) -> Seconds:  # pragma: no cover
         raise NotImplementedError
 
 
 class GeoLowerBoundHeuristic(Heuristic):
-    """Cota inferior geométrica: distancia en línea recta / v_max.
-
-    Mantiene admisibilidad porque asume velocidad alta (límite inferior de tiempo).
-    """
-
+    """Cota inferior geométrica: distancia en línea recta / v_max."""
     def __init__(self, vmax_kmh: KmPerHour = 65.0) -> None:
         self.vmax_kmh = vmax_kmh
 
@@ -340,11 +391,7 @@ class GeoLowerBoundHeuristic(Heuristic):
 
 
 class LearnedHistoricalHeuristic(Heuristic):
-    """Heurística aprendida: usa una velocidad alta plausible por hora (p.ej., p95).
-
-    Debe ser conservadora para no sobreestimar; se recomienda combinar con la geométrica.
-    """
-
+    """Heurística aprendida: usa una velocidad alta plausible por hora (p.ej., p95)."""
     def __init__(self, vmax95_by_hour: Optional[Dict[int, KmPerHour]] = None) -> None:
         self.vmax95_by_hour = vmax95_by_hour or {h: 65.0 for h in range(24)}
 
@@ -357,8 +404,7 @@ class LearnedHistoricalHeuristic(Heuristic):
 
 
 class HybridConservativeHeuristic(Heuristic):
-    """Heurística híbrida: `min(heurística aprendida, geométrica)` → admisible."""
-
+    """Heurística híbrida: min(heurística aprendida, geométrica) → admisible."""
     def __init__(self, learned: LearnedHistoricalHeuristic, geo: GeoLowerBoundHeuristic) -> None:
         self.learned = learned
         self.geo = geo
@@ -374,19 +420,8 @@ class HybridConservativeHeuristic(Heuristic):
 # 5) Requests/Results y utilidades
 # ==========================================================
 
-
 @dataclass
 class RouteRequest:
-    """Solicitud de ruteo multi-destino.
-
-    Args:
-        origin: nodo de inicio.
-        destinations: lista de nodos a visitar.
-        hour: franja horaria (0–23) para costos/heurística.
-        mode: modo de ruteo (TSP abierto/circuito o fixed order).
-        algorithm: algoritmo base para tramos par-a-par.
-    """
-
     origin: NodeId
     destinations: List[NodeId]
     hour: int
@@ -396,8 +431,6 @@ class RouteRequest:
 
 @dataclass
 class RouteLeg:
-    """Un tramo par-a-par dentro de una ruta completa."""
-
     src: NodeId
     dst: NodeId
     path: List[NodeId]
@@ -408,19 +441,16 @@ class RouteLeg:
 
 @dataclass
 class RouteResult:
-    """Resultado final de ruteo (multi-destino o single)."""
-
-    visit_order: List[NodeId]  # orden de visita (incluye origin y destinos en orden)
-    legs: List[RouteLeg]  # descomposición por tramos (src→dst)
+    visit_order: List[NodeId]
+    legs: List[RouteLeg]
     total_seconds: Seconds
     total_distance_m: Meters
-    algorithm_summary: str  # p.ej., "A* + Held-Karp" o "A* + NN+2opt"
+    algorithm_summary: str
     cache_hits: int = 0
     cache_misses: int = 0
 
 
 def iter_path_edges(path: List[NodeId]) -> Iterator[Tuple[NodeId, NodeId]]:
-    """Generador que emite aristas consecutivas (u, v) de un camino dado por nodos."""
     for i in range(len(path) - 1):
         yield path[i], path[i + 1]
 
@@ -429,10 +459,7 @@ def iter_path_edges(path: List[NodeId]) -> Iterator[Tuple[NodeId, NodeId]]:
 # 6) Routers par-a-par (Strategy)
 # ==========================================================
 
-
 class SearchStats:
-    """Métricas del algoritmo de búsqueda (para profiling y UI)."""
-
     def __init__(self) -> None:
         self.expanded_nodes: int = 0
         self.queue_pushes: int = 0
@@ -440,8 +467,6 @@ class SearchStats:
 
 
 class Router:
-    """Interfaz de router par-a-par."""
-
     def route(
         self,
         graph: Graph,
@@ -468,8 +493,6 @@ def _reconstruct(parent: Dict[NodeId, Optional[NodeId]], src: NodeId, dst: NodeI
 
 
 class DijkstraRouter(Router):
-    """Implementación Dijkstra (óptimo para costos no negativos)."""
-
     def route(
         self,
         graph: Graph,
@@ -510,8 +533,6 @@ class DijkstraRouter(Router):
 
 
 class AStarRouter(Router):
-    """Implementación A* (usa heurística admisible para acelerar)."""
-
     def __init__(self, default_heuristic: Optional[Heuristic] = None) -> None:
         self.default_heuristic = default_heuristic
 
@@ -566,13 +587,8 @@ class AStarRouter(Router):
 # 7) Caches y memoización
 # ==========================================================
 
-
 class LRUCache:
-    """Cache LRU genérica parametrizable por capacidad.
-
-    Se usa para cachear rutas, subrutas y valores de heurística.
-    """
-
+    """Cache LRU genérica parametrizable por capacidad."""
     def __init__(self, capacity: int = 1024) -> None:
         self.capacity = capacity
         self._store: OrderedDict[Tuple[Any, ...], Any] = OrderedDict()
@@ -595,7 +611,6 @@ class LRUCache:
 
 class SSSPMemo:
     """Memoización de SSSP (árbol de distancias y padres) por clave."""
-
     def __init__(self) -> None:
         self._store: Dict[Tuple[Any, ...], Tuple[Dict[NodeId, Seconds], Dict[NodeId, Optional[NodeId]]]] = {}
 
@@ -611,7 +626,6 @@ class SSSPMemo:
 
 class RouteCache:
     """Cache específica de rutas completas (src, dst, hour, algo, heur_ver, graph_ver)."""
-
     def __init__(self, capacity: int = 2048) -> None:
         self._lru = LRUCache(capacity)
 
@@ -624,7 +638,6 @@ class RouteCache:
 
 class PairwiseMatrixCache:
     """Cache para matrices par-a-par (tiempos + paths) sobre un conjunto de waypoints."""
-
     def __init__(self) -> None:
         self._store: Dict[Tuple[Any, ...], Tuple[List[List[Seconds]], Dict[Tuple[int, int], List[NodeId]]]] = {}
 
@@ -644,7 +657,6 @@ class PairwiseMatrixCache:
 # 8) Servicios par-a-par y multi-destino
 # ==========================================================
 
-
 def _path_distance_m(graph: Graph, path: List[NodeId]) -> float:
     dist = 0.0
     for u, v in iter_path_edges(path):
@@ -657,16 +669,8 @@ def _path_distance_m(graph: Graph, path: List[NodeId]) -> float:
 
 class PairwiseDistanceService:
     """Calcula, con batching y concurrencia, todas las rutas par-a-par entre waypoints.
-
-    - Agrupa por (src, hour, algorithm) para reutilizar SSSP donde convenga.
-    - Paraleliza por grupos y llena time_matrix y path_map.
-    - Respeta caches (RouteCache, SSSPMemo, PairwiseMatrixCache).
-
-    Nota: Para completar la matriz eficientemente, aunque el usuario haya seleccionado
-    ASTAR, este servicio ejecuta **Dijkstra single-source** por cada `src` del conjunto,
-    ya que A* multi-objetivo no aporta ventajas en la construcción de matrices completas.
+    Nota: para la matriz completa conviene Dijkstra SSSP por fuente.
     """
-
     def __init__(
         self,
         router_astar: Router,
@@ -749,25 +753,16 @@ class PairwiseDistanceService:
 
 
 class MultiStopSolver:
-    """Interfaz del solver multi-destino (TSP/Waypoints)."""
-
     def solve(self, waypoints: List[NodeId], time_matrix: List[List[Seconds]], *, mode: RouteMode) -> List[int]:  # pragma: no cover
         raise NotImplementedError
 
 
 class HeldKarpExact(MultiStopSolver):
-    """DP exacto para TSP (apto hasta ~12–14 destinos).
-
-    Implementa variante con origen fijo en índice 0. Soporta circuito y abierto.
-    """
-
+    """DP exacto para TSP (apto hasta ~12–14 destinos). Origen fijo en índice 0."""
     def solve(self, waypoints: List[NodeId], time_matrix: List[List[Seconds]], *, mode: RouteMode) -> List[int]:
         n = len(waypoints)
-        if n <= 1:
-            return list(range(n))
-        # Map (subset_mask, last_idx) -> (cost, prev_idx)
+        if n <= 1: return list(range(n))
         from math import inf
-
         ALL = 1 << n
         dp_cost = [[inf] * n for _ in range(ALL)]
         dp_prev = [[-1] * n for _ in range(ALL)]
@@ -775,46 +770,35 @@ class HeldKarpExact(MultiStopSolver):
         dp_cost[1 << origin][origin] = 0.0
 
         for mask in range(ALL):
-            if not (mask & (1 << origin)):
-                continue
+            if not (mask & (1 << origin)): continue
             for j in range(n):
-                if not (mask & (1 << j)):
-                    continue
+                if not (mask & (1 << j)): continue
                 cost_j = dp_cost[mask][j]
-                if cost_j == inf:
-                    continue
+                if cost_j == inf: continue
                 for k in range(n):
-                    if mask & (1 << k):
-                        continue
+                    if mask & (1 << k): continue
                     new_mask = mask | (1 << k)
                     cand = cost_j + time_matrix[j][k]
                     if cand < dp_cost[new_mask][k]:
                         dp_cost[new_mask][k] = cand
                         dp_prev[new_mask][k] = j
 
-        # Reconstrucción
         if mode == RouteMode.VISIT_ALL_CIRCUIT:
-            best_cost = inf
-            last = -1
-            full = ALL - 1
+            best_cost = inf; last = -1; full = ALL - 1
             for j in range(n):
-                cand = dp_cost[full][j] + time_matrix[j][origin]
+                cand = dp_cost[full][j] + time_matrix[j][0]
                 if cand < best_cost:
-                    best_cost = cand
-                    last = j
+                    best_cost = cand; last = j
             order = []
             mask = full
             while last != -1:
                 order.append(last)
                 prev = dp_prev[mask][last]
-                if prev == -1:
-                    break
-                mask &= ~(1 << last)
-                last = prev
-            order.append(origin)
-            order.reverse()
+                if prev == -1: break
+                mask &= ~(1 << last); last = prev
+            order.append(0); order.reverse()
             return order
-        else:  # abierto: no vuelve al origen
+        else:
             full = ALL - 1
             last = min(range(n), key=lambda j: dp_cost[full][j])
             order = []
@@ -822,33 +806,27 @@ class HeldKarpExact(MultiStopSolver):
             while last != -1:
                 order.append(last)
                 prev = dp_prev[mask][last]
-                if prev == -1:
-                    break
-                mask &= ~(1 << last)
-                last = prev
-            order.append(origin)
-            order.reverse()
+                if prev == -1: break
+                mask &= ~(1 << last); last = prev
+            order.append(0); order.reverse()
             return order
 
 
 class HeuristicRoute(MultiStopSolver):
-    """Heurístico para TSP/Waypoints: Nearest Neighbor + 2-opt."""
-
+    """Heurístico: Nearest Neighbor + 2-opt con restarts."""
     def __init__(self, restarts: int = 4, use_3opt: bool = False) -> None:
         self.restarts = max(1, int(restarts))
         self.use_3opt = bool(use_3opt)
 
     def solve(self, waypoints: List[NodeId], time_matrix: List[List[Seconds]], *, mode: RouteMode) -> List[int]:
         n = len(waypoints)
-        if n <= 1:
-            return list(range(n))
+        if n <= 1: return list(range(n))
 
         def route_cost(order: List[int], circuit: bool) -> float:
             c = 0.0
             for a, b in zip(order, order[1:]):
                 c += time_matrix[a][b]
-            if circuit:
-                c += time_matrix[order[-1]][order[0]]
+            if circuit: c += time_matrix[order[-1]][order[0]]
             return c
 
         def two_opt(order: List[int], circuit: bool) -> List[int]:
@@ -873,16 +851,11 @@ class HeuristicRoute(MultiStopSolver):
         seeds = [origin] + [i for i in range(1, n)]
         seeds = seeds[: self.restarts]
         for seed in seeds:
-            unvis = set(range(n))
-            unvis.remove(seed)
-            order = [seed]
-            cur = seed
+            unvis = set(range(n)); unvis.remove(seed)
+            order = [seed]; cur = seed
             while unvis:
                 nxt = min(unvis, key=lambda j: time_matrix[cur][j])
-                order.append(nxt)
-                unvis.remove(nxt)
-                cur = nxt
-            # asegurar origen en la primera posición
+                order.append(nxt); unvis.remove(nxt); cur = nxt
             if origin in order:
                 idx = order.index(origin)
                 order = order[idx:] + order[:idx]
@@ -896,7 +869,6 @@ class HeuristicRoute(MultiStopSolver):
 
 class RouteSplicer:
     """Reconstruye la ruta final concatenando los tramos par-a-par del orden elegido."""
-
     def splice(
         self,
         waypoints: List[NodeId],
@@ -920,19 +892,14 @@ class RouteSplicer:
 # 9) Concurrencia y profiling
 # ==========================================================
 
-
 @dataclass
 class ProfileReport:
-    """Reporte de profiling (resumen textual + métricas clave)."""
-
     text: str
     total_seconds: float
     call_count: int
 
 
 class Profiler:
-    """Wrapper sobre cProfile/tiempos por etapa para mostrar en la UI."""
-
     def run(self, func: Callable[..., Any], *args, **kwargs) -> ProfileReport:
         pr = cProfile.Profile()
         t0 = time.perf_counter()
@@ -947,8 +914,6 @@ class Profiler:
 
 
 class ConcurrencyExecutor:
-    """Ejecutor simple basado en ThreadPool (suficiente para Streamlit Cloud)."""
-
     def __init__(self, max_workers: int = 4) -> None:
         self.max_workers = max_workers
 
@@ -965,17 +930,8 @@ class ConcurrencyExecutor:
 # 10) Servicio orquestador de ruteo
 # ==========================================================
 
-
 class RoutingService:
-    """Orquesta el pipeline de ruteo single y multi-destino.
-
-    Flujo multi-destino:
-        1) (time_matrix, path_map) con PairwiseDistanceService (batching + cache/memoización).
-        2) Elegir solver (Held-Karp o Heurístico) según tamaño y modo.
-        3) Splice de tramos para la ruta final.
-        4) Armar RouteResult con métricas y metadata.
-    """
-
+    """Orquesta el pipeline de ruteo single y multi-destino."""
     def __init__(
         self,
         graph: Graph,
@@ -993,12 +949,9 @@ class RoutingService:
         self.solver_exact = solver_exact
         self.solver_heur = solver_heur
         self.splicer = splicer
-
-        # Routers para single
         self.router_dijkstra = DijkstraRouter()
         self.router_astar = AStarRouter(default_heuristic=heuristic)
 
-    # ---- Single (par-a-par) ----
     def route_single(
         self,
         src: NodeId,
@@ -1007,14 +960,12 @@ class RoutingService:
         hour: int,
         algorithm: Algorithm = Algorithm.ASTAR,
     ) -> RouteLeg:
-        """Devuelve un tramo óptimo entre src y dst (atajo para UI y tests)."""
         if algorithm == Algorithm.DIJKSTRA or algorithm == Algorithm.BFS:
             leg, _ = self.router_dijkstra.route(self.graph, src, dst, hour=hour, traffic=self.traffic)
         else:
             leg, _ = self.router_astar.route(self.graph, src, dst, hour=hour, traffic=self.traffic, heuristic=self.heuristic)
         return leg
 
-    # ---- Multi-destino ----
     def route(self, request: RouteRequest) -> RouteResult:
         waypoints = [request.origin] + list(request.destinations)
         time_matrix, path_map = self.pairwise.compute_matrix(
@@ -1026,18 +977,16 @@ class RoutingService:
             heuristic=self.heuristic,
         )
         n = len(waypoints)
-        # elegir solver
         if request.mode == RouteMode.FIXED_ORDER:
             visit_order_idx = list(range(n))
+            alg_sum = f"{request.algorithm.value}"
         else:
-            if n <= 13:  # exacto hasta ~12-14
+            if n <= 13:
                 visit_order_idx = self.solver_exact.solve(waypoints, time_matrix, mode=request.mode)
                 alg_sum = f"{request.algorithm.value} + Held-Karp"
             else:
                 visit_order_idx = self.solver_heur.solve(waypoints, time_matrix, mode=request.mode)
                 alg_sum = f"{request.algorithm.value} + NN/2opt"
-        # si es FIXED_ORDER y n>1, usar heurístico para pequeños ajustes? dejamos orden fijo.
-            alg_sum = locals().get("alg_sum", f"{request.algorithm.value}")
 
         legs = self.splicer.splice(waypoints, visit_order_idx, path_map, self.graph, time_matrix)
         total_seconds = sum(l.seconds for l in legs)
@@ -1050,9 +999,7 @@ class RoutingService:
 # 11) Helpers matemáticos/geo
 # ==========================================================
 
-
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Distancia Haversine aproximada en km (para heurísticas y generación de grafo)."""
     r = 6371.0  # km
     dlat = radians(lat2 - lat1)
     dlon = radians(lon2 - lon1)
@@ -1062,9 +1009,8 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 # ==========================================================
-# 12) Tests unitarios
+# 12) Tests unitarios (sobre ciudad sintética)
 # ==========================================================
-
 
 class _BaseFixture:
     @staticmethod
@@ -1095,7 +1041,6 @@ class TestGraph(unittest.TestCase):
         edges = sum(1 for _ in g.iter_edges())
         self.assertGreater(nodes, 0)
         self.assertGreater(edges, 0)
-        # Debe haber alguna arista de un solo sentido
         self.assertTrue(any(e.one_way for _, e in g.iter_edges()))
 
 
@@ -1103,11 +1048,9 @@ class TestRouters(unittest.TestCase):
     def test_astar_equals_dijkstra(self):
         g = _BaseFixture.make_small_graph()
         traffic, heuristic, _ = _BaseFixture.make_engine_components(g)
-        # Tomar dos nodos razonablemente apartados
         src, dst, hour = 0, 62, 8
         leg_d, _ = DijkstraRouter().route(g, src, dst, hour=hour, traffic=traffic)
         leg_a, _ = AStarRouter(heuristic).route(g, src, dst, hour=hour, traffic=traffic, heuristic=heuristic)
-        # Mismo costo óptimo (tiempo); A* puede expandir menos nodos
         self.assertAlmostEqual(leg_d.seconds, leg_a.seconds, places=6)
         self.assertGreaterEqual(leg_d.distance_m, 0.0)
         self.assertGreaterEqual(leg_a.distance_m, 0.0)
@@ -1121,7 +1064,6 @@ class TestPairwise(unittest.TestCase):
         tm, pm = psvc.compute_matrix(g, waypoints, hour=8, algorithm=Algorithm.ASTAR, traffic=traffic, heuristic=heuristic)
         self.assertEqual(len(tm), len(waypoints))
         self.assertTrue(all(len(row) == len(waypoints) for row in tm))
-        # caminos i->i son triviales
         for i in range(len(waypoints)):
             self.assertEqual(tm[i][i], 0.0)
             self.assertEqual(pm[(i, i)], [waypoints[i]])
@@ -1134,7 +1076,7 @@ class TestSolvers(unittest.TestCase):
         waypoints = [0, 9, 56, 63, 7]
         tm, pm = psvc.compute_matrix(g, waypoints, hour=8, algorithm=Algorithm.DIJKSTRA, traffic=traffic, heuristic=heuristic)
         order_idx = HeldKarpExact().solve(waypoints, tm, mode=RouteMode.VISIT_ALL_OPEN)
-        self.assertEqual(order_idx[0], 0)  # origen fijo
+        self.assertEqual(order_idx[0], 0)
         self.assertEqual(len(order_idx), len(waypoints))
 
     def test_nn_2opt(self):
@@ -1143,7 +1085,7 @@ class TestSolvers(unittest.TestCase):
         waypoints = [0, 5, 10, 18, 23, 40]
         tm, pm = psvc.compute_matrix(g, waypoints, hour=18, algorithm=Algorithm.ASTAR, traffic=traffic, heuristic=heuristic)
         order_idx = HeuristicRoute(restarts=3).solve(waypoints, tm, mode=RouteMode.VISIT_ALL_CIRCUIT)
-        self.assertEqual(order_idx[0], 0)  # suele rotarse al origen
+        self.assertEqual(order_idx[0], 0)
         self.assertEqual(len(order_idx), len(waypoints))
 
 
@@ -1176,11 +1118,10 @@ class TestRoutingService(unittest.TestCase):
 # ----------------------------------------------------------
 if __name__ == "__main__":
     import sys
-
     if "-m" in sys.argv and "test" in sys.argv:
         unittest.main(argv=[sys.argv[0]])
     else:
-        # Smoke test rápido
+        # Smoke test rápido (sintético)
         g = Graph.build_small_town(seed=5, blocks_x=8, blocks_y=8)
         traffic = HistoricalTrafficModel()
         heuristic = HybridConservativeHeuristic(LearnedHistoricalHeuristic(), GeoLowerBoundHeuristic())
@@ -1188,13 +1129,7 @@ if __name__ == "__main__":
         ssp_memo = SSSPMemo()
         psvc = PairwiseDistanceService(AStarRouter(heuristic), DijkstraRouter(), route_cache, ssp_memo)
         service = RoutingService(
-            g,
-            traffic,
-            heuristic,
-            psvc,
-            HeldKarpExact(),
-            HeuristicRoute(restarts=2),
-            RouteSplicer(),
+            g, traffic, heuristic, psvc, HeldKarpExact(), HeuristicRoute(restarts=2), RouteSplicer()
         )
         req = RouteRequest(origin=0, destinations=[7, 56, 63], hour=8, mode=RouteMode.VISIT_ALL_OPEN)
         out = service.route(req)

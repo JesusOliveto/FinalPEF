@@ -168,7 +168,7 @@ class Graph:
         # Centro de referencia (aprox. Plaza San Martín)
         LAT0 = -30.980556
         LON0 = -64.091944
-        
+
         # Conversión plano local (metros) <-> lat/lon
         Kx = 111000.0 * cos(radians(LAT0))  # m por grado lon
         Ky = 111000.0                        # m por grado lat
@@ -181,6 +181,13 @@ class Graph:
                 return dx, dy
             th = radians(deg)
             return dx * cos(th) - dy * sin(th), dx * sin(th) + dy * cos(th)
+
+        # === Política de doble mano ===
+        BIDIR_PRIMARY = True           # avenidas
+        BIDIR_COLLECTOR = False        # colectoras
+        BIDIR_RESIDENTIAL = False      # residenciales
+        BIDIR_RN9 = True               # diagonal principal (RN-9)
+        BIDIR_CONNECTORS = False       # enlaces entre parches y a la RN-9
 
         def add_grid_patch(
             *,
@@ -233,6 +240,19 @@ class Graph:
                     return RoadClass.COLLECTOR
                 return RoadClass.RESIDENTIAL
 
+            # helper: agrega mano única alternando por fila/columna
+            def add_one_way(u: int, v: int, dist: float, rc: RoadClass, sp: float, *, is_horizontal: bool, r: int, c: int):
+                if is_horizontal:
+                    if (r % 2) == 0:
+                        g.add_edge(u, v, dist, rc, sp, one_way=True)
+                    else:
+                        g.add_edge(v, u, dist, rc, sp, one_way=True)
+                else:
+                    if (c % 2) == 0:
+                        g.add_edge(u, v, dist, rc, sp, one_way=True)
+                    else:
+                        g.add_edge(v, u, dist, rc, sp, one_way=True)
+
             # 2) aristas
             for r in range(ny):
                 for c in range(nx):
@@ -243,14 +263,20 @@ class Graph:
                         dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
                         rc = class_h(r)
                         sp = v_pri if rc == RoadClass.PRIMARY else (v_col if rc == RoadClass.COLLECTOR else v_res)
-                        g.add_bidirectional(u, v, dist, rc, sp)
+                        if (rc == RoadClass.PRIMARY and BIDIR_PRIMARY) or (rc == RoadClass.COLLECTOR and BIDIR_COLLECTOR) or (rc == RoadClass.RESIDENTIAL and BIDIR_RESIDENTIAL):
+                            g.add_bidirectional(u, v, dist, rc, sp)
+                        else:
+                            add_one_way(u, v, dist, rc, sp, is_horizontal=True, r=r, c=c)
                     if r + 1 < ny:
                         v = ids[r + 1][c]
                         n1, n2 = g.get_node(u), g.get_node(v)
                         dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
                         rc = class_v(c)
                         sp = v_pri if rc == RoadClass.PRIMARY else (v_col if rc == RoadClass.COLLECTOR else v_res)
-                        g.add_bidirectional(u, v, dist, rc, sp)
+                        if (rc == RoadClass.PRIMARY and BIDIR_PRIMARY) or (rc == RoadClass.COLLECTOR and BIDIR_COLLECTOR) or (rc == RoadClass.RESIDENTIAL and BIDIR_RESIDENTIAL):
+                            g.add_bidirectional(u, v, dist, rc, sp)
+                        else:
+                            add_one_way(u, v, dist, rc, sp, is_horizontal=False, r=r, c=c)
 
             # 3) ids de borde (para conectores entre patches)
             border: List[int] = []
@@ -276,7 +302,14 @@ class Graph:
             for d, u, v in pairs:
                 if u in used_a or v in used_b:
                     continue
-                g.add_bidirectional(u, v, d, road, v_kmh)
+                # Respeta política de conectores
+                if BIDIR_CONNECTORS:
+                    g.add_bidirectional(u, v, d, road, v_kmh)
+                else:
+                    if (cnt % 2) == 0:
+                        g.add_edge(u, v, d, road, v_kmh, one_way=True)
+                    else:
+                        g.add_edge(v, u, d, road, v_kmh, one_way=True)
                 used_a.add(u); used_b.add(v)
                 cnt += 1
                 if cnt >= k_pairs:
@@ -341,7 +374,11 @@ class Graph:
             if prev_id is not None:
                 n1, n2 = g.get_node(prev_id), g.get_node(next_id)
                 dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
-                g.add_bidirectional(prev_id, next_id, dist, RoadClass.PRIMARY, v_pri)
+                # RN-9 según política
+                if BIDIR_RN9:
+                    g.add_bidirectional(prev_id, next_id, dist, RoadClass.PRIMARY, v_pri)
+                else:
+                    g.add_edge(prev_id, next_id, dist, RoadClass.PRIMARY, v_pri, one_way=True)  # SW→NE
             prev_id = next_id
             next_id += 1
 
@@ -360,7 +397,13 @@ class Graph:
                     if d < best_d:
                         best_d, best = d, b
                 if best is not None and best_d <= max_dist_m:
-                    g.add_bidirectional(pid, best, best_d, RoadClass.COLLECTOR, 50.0)
+                    if BIDIR_CONNECTORS:
+                        g.add_bidirectional(pid, best, best_d, RoadClass.COLLECTOR, 50.0)
+                    else:
+                        if (i % 2) == 0:
+                            g.add_edge(pid, best, best_d, RoadClass.COLLECTOR, 50.0, one_way=True)
+                        else:
+                            g.add_edge(best, pid, best_d, RoadClass.COLLECTOR, 50.0, one_way=True)
 
         attach_poly_to_patch(rn9_ids, border_c, every=1, max_dist_m=220.0)
         attach_poly_to_patch(rn9_ids, border_se, every=1, max_dist_m=220.0)

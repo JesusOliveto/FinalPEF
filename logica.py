@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """
 logica.py — Motor de ruteo para “Pueblito: Rutas Inteligentes”
-Versión sin OSM, con una ciudad hardcodeada que emula la traza de Jesús María.
+Versión 100% hardcodeada con una red que imita la traza de Jesús María (Córdoba).
 
-Incluye:
-- Graph.build_jesus_maria_hardcoded(): dos grillas rotadas + arteria primaria diagonal.
+Componentes:
+- Graph.build_jesus_maria_hardcoded(): 3 parches de grilla + diagonal primaria (RN-9 aprox.)
 - Algoritmos: Dijkstra y A* (heurística admisible).
-- Matriz par-a-par con batching/concurrencia y TSP (Held-Karp / NN+2opt).
+- Matriz par-a-par con batching y TSP (Held-Karp o NN+2opt).
+
+No usa OSM ni geocodificación.
 """
 from __future__ import annotations
 
@@ -17,9 +19,8 @@ from collections import defaultdict, OrderedDict
 from math import radians, sin, cos, asin, sqrt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import random
-import time
-import cProfile, pstats, io
 import unittest
+import io, time, cProfile, pstats
 
 
 # ==========================================================
@@ -88,6 +89,17 @@ class Graph:
     ) -> None:
         self.adj[u].append(Edge(v, distance_m, road_class, freeflow_kmh, one_way))
 
+    def add_bidirectional(
+        self,
+        u: NodeId,
+        v: NodeId,
+        distance_m: Meters,
+        road_class: RoadClass,
+        freeflow_kmh: KmPerHour,
+    ) -> None:
+        self.add_edge(u, v, distance_m, road_class, freeflow_kmh)
+        self.add_edge(v, u, distance_m, road_class, freeflow_kmh)
+
     def neighbors(self, u: NodeId) -> Iterable[Edge]:
         return self.adj.get(u, [])
 
@@ -102,7 +114,7 @@ class Graph:
             for e in lst:
                 yield u, e
 
-    # ---- ciudad sintética (se mantiene por compatibilidad)
+    # ---- ciudad sintética genérica (queda por compatibilidad)
     @staticmethod
     def build_small_town(
         *,
@@ -110,11 +122,8 @@ class Graph:
         blocks_x: int = 10,
         blocks_y: int = 10,
         spacing_m: float = 120.0,
-        base_lat: float = -30.9861543498,
-        base_lon: float = -64.0895783905,
-        two_way_ratio: float = 0.7,
-        primary_ratio: float = 0.1,
-        collector_ratio: float = 0.3,
+        base_lat: float = -30.9859,
+        base_lon: float = -64.0947,
     ) -> "Graph":
         rnd = random.Random(seed)
         g = Graph()
@@ -128,112 +137,103 @@ class Graph:
             for c in range(blocks_x):
                 g.add_node(nid(r, c), base_lat + r * dlat, base_lon + c * dlon)
 
-        speed_by_class = {
-            RoadClass.RESIDENTIAL: 35.0,
-            RoadClass.COLLECTOR: 45.0,
-            RoadClass.PRIMARY: 60.0,
-        }
-
-        def sample_road_class() -> RoadClass:
-            x = rnd.random()
-            if x < primary_ratio:
-                return RoadClass.PRIMARY
-            if x < primary_ratio + collector_ratio:
-                return RoadClass.COLLECTOR
-            return RoadClass.RESIDENTIAL
-
         for r in range(blocks_y):
             for c in range(blocks_x):
                 u = nid(r, c)
                 if c + 1 < blocks_x:
                     v = nid(r, c + 1)
                     n1, n2 = g.get_node(u), g.get_node(v)
-                    dist_m = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
-                    rc = sample_road_class()
-                    sp = speed_by_class[rc]
-                    if rnd.random() < two_way_ratio:
-                        g.add_edge(u, v, dist_m, rc, sp)
-                        g.add_edge(v, u, dist_m, rc, sp)
-                    else:
-                        if r % 2 == 0:
-                            g.add_edge(u, v, dist_m, rc, sp, True)
-                        else:
-                            g.add_edge(v, u, dist_m, rc, sp, True)
+                    dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
+                    g.add_bidirectional(u, v, dist, RoadClass.RESIDENTIAL, 40.0)
                 if r + 1 < blocks_y:
                     v = nid(r + 1, c)
                     n1, n2 = g.get_node(u), g.get_node(v)
-                    dist_m = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
-                    rc = sample_road_class()
-                    sp = speed_by_class[rc]
-                    if rnd.random() < two_way_ratio:
-                        g.add_edge(u, v, dist_m, rc, sp)
-                        g.add_edge(v, u, dist_m, rc, sp)
-                    else:
-                        if c % 2 == 0:
-                            g.add_edge(u, v, dist_m, rc, sp, True)
-                        else:
-                            g.add_edge(v, u, dist_m, rc, sp, True)
+                    dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
+                    g.add_bidirectional(u, v, dist, RoadClass.RESIDENTIAL, 40.0)
         return g
 
     # ---- NUEVO: Jesús María hardcodeado (sin OSM)
     @staticmethod
     def build_jesus_maria_hardcoded() -> "Graph":
         """
-        Genera una red vial que emula la traza de Jesús María:
-        - Grilla principal (centro) rotada ~-22°.
-        - Grilla sudeste (Malvinas Argentinas) sin rotación.
-        - Arteria primaria diagonal que une ambas (RN-9/Av. Malvinas).
+        Red vial estilizada que imita Jesús María:
+        - Grilla Centro (rotada -22°).
+        - Grilla Sudeste (cardinal).
+        - Grilla Noroeste pequeña (rotada -22°).
+        - Diagonal primaria SW→NE (RN-9 aprox.) con enlaces.
+        - Conectores entre bordes de patches (sin solapamientos caóticos).
         """
         g = Graph()
 
-        # Centro geográfico de referencia (aprox. Plaza San Martín)
+        # Centro de referencia (aprox. Plaza San Martín)
         LAT0 = -30.9859
         LON0 = -64.0947
 
-        def meters_to_deg(lat_ref: float, dx_m: float, dy_m: float) -> Tuple[float, float]:
-            dlat = dy_m / 111000.0
-            dlon = dx_m / (111000.0 * cos(radians(lat_ref)))
-            return dlon, dlat  # (Δlon, Δlat)
+        # Conversión plano local (metros) <-> lat/lon
+        Kx = 111000.0 * cos(radians(LAT0))  # m por grado lon
+        Ky = 111000.0                        # m por grado lat
 
-        def rot(lon: float, lat: float, deg: float, cx: float, cy: float) -> Tuple[float, float]:
-            if deg == 0:
-                return lon, lat
+        def to_lonlat(x_m: float, y_m: float) -> Tuple[float, float]:
+            return (LON0 + x_m / Kx, LAT0 + y_m / Ky)
+
+        def rot_xy(dx: float, dy: float, deg: float) -> Tuple[float, float]:
+            if deg == 0.0:
+                return dx, dy
             th = radians(deg)
-            dx = lon - cx
-            dy = lat - cy
-            rx = dx * cos(th) - dy * sin(th)
-            ry = dx * sin(th) + dy * cos(th)
-            return cx + rx, cy + ry
+            return dx * cos(th) - dy * sin(th), dx * sin(th) + dy * cos(th)
 
-        # Helper: añade grilla rectangular y devuelve matriz de ids
-        def add_grid(cx: float, cy: float, nx: int, ny: int, step_m: float, rotation_deg: float, start_id: int,
-                     primary_step: int = 4, collector_step: int = 2) -> Tuple[List[List[int]], int]:
+        def add_grid_patch(
+            *,
+            center_xy_m: Tuple[float, float],
+            nx: int, ny: int,
+            step_m: float,
+            rotation_deg: float,
+            primary_mod: int,
+            collector_mod: int,
+            start_id: int
+        ) -> Tuple[List[List[int]], List[int], int]:
+            """
+            Crea una grilla rectangular centrada en center_xy_m, rotada.
+            Devuelve: matriz ids, ids_de_borde, next_id.
+            """
+            cx, cy = center_xy_m
             ids = [[-1] * nx for _ in range(ny)]
-            # Crear nodos
+            next_id = start_id
+
+            # 1) nodos
             for r in range(ny):
                 for c in range(nx):
+                    # coords locales respecto al centro del patch
                     dx = (c - (nx - 1) / 2.0) * step_m
                     dy = (r - (ny - 1) / 2.0) * step_m
-                    dlon, dlat = meters_to_deg(cy, dx, dy)
-                    lon, lat = LON0 + dlon, LAT0 + dlat
-                    lon, lat = rot(lon, lat, rotation_deg, LON0, LAT0)
-                    nid = start_id
-                    start_id += 1
-                    g.add_node(nid, lat, lon)
-                    ids[r][c] = nid
-            # Velocidades
+                    rx, ry = rot_xy(dx, dy, rotation_deg)
+                    X = cx + rx
+                    Y = cy + ry
+                    lon, lat = to_lonlat(X, Y)
+                    g.add_node(next_id, lat, lon)
+                    ids[r][c] = next_id
+                    next_id += 1
+
+            # velocidades típicas
             v_res, v_col, v_pri = 35.0, 45.0, 65.0
 
-            # Función de clase por “avenidas” cada N calles
-            def rc_for(r: int, c: int, horizontal: bool) -> RoadClass:
-                idx = c if horizontal else r
-                if idx % primary_step == 0:
+            def class_h(row: int) -> RoadClass:
+                # horizontal (E-O): depende de fila
+                if row % primary_mod == 0:
                     return RoadClass.PRIMARY
-                if idx % collector_step == 0:
+                if row % collector_mod == 0:
                     return RoadClass.COLLECTOR
                 return RoadClass.RESIDENTIAL
 
-            # Aristas (dos manos)
+            def class_v(col: int) -> RoadClass:
+                # vertical (N-S): depende de columna
+                if col % primary_mod == 0:
+                    return RoadClass.PRIMARY
+                if col % collector_mod == 0:
+                    return RoadClass.COLLECTOR
+                return RoadClass.RESIDENTIAL
+
+            # 2) aristas
             for r in range(ny):
                 for c in range(nx):
                     u = ids[r][c]
@@ -241,61 +241,134 @@ class Graph:
                         v = ids[r][c + 1]
                         n1, n2 = g.get_node(u), g.get_node(v)
                         dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
-                        rc = rc_for(r, c, True)
-                        sp = v_pri if rc == RoadClass.PRIMARY else v_col if rc == RoadClass.COLLECTOR else v_res
-                        g.add_edge(u, v, dist, rc, sp)
-                        g.add_edge(v, u, dist, rc, sp)
+                        rc = class_h(r)
+                        sp = v_pri if rc == RoadClass.PRIMARY else (v_col if rc == RoadClass.COLLECTOR else v_res)
+                        g.add_bidirectional(u, v, dist, rc, sp)
                     if r + 1 < ny:
                         v = ids[r + 1][c]
                         n1, n2 = g.get_node(u), g.get_node(v)
                         dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
-                        rc = rc_for(r, c, False)
-                        sp = v_pri if rc == RoadClass.PRIMARY else v_col if rc == RoadClass.COLLECTOR else v_res
-                        g.add_edge(u, v, dist, rc, sp)
-                        g.add_edge(v, u, dist, rc, sp)
-            return ids, start_id
+                        rc = class_v(c)
+                        sp = v_pri if rc == RoadClass.PRIMARY else (v_col if rc == RoadClass.COLLECTOR else v_res)
+                        g.add_bidirectional(u, v, dist, rc, sp)
 
-        # --- Grilla 1: centro histórico (rotada aprox. -22°) ---
+            # 3) ids de borde (para conectores entre patches)
+            border: List[int] = []
+            for r in range(ny):
+                for c in range(nx):
+                    if r in (0, ny - 1) or c in (0, nx - 1):
+                        border.append(ids[r][c])
+            return ids, border, next_id
+
+        def connect_nearest(border_a: List[int], border_b: List[int], *, k_pairs: int, max_dist_m: float, road: RoadClass, v_kmh: float):
+            # Construye pares más cercanos (greedy) bajo umbral y añade colectoras/primarias
+            pairs: List[Tuple[float, int, int]] = []
+            for u in border_a:
+                n1 = g.get_node(u)
+                for v in border_b:
+                    n2 = g.get_node(v)
+                    d = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
+                    if d <= max_dist_m:
+                        pairs.append((d, u, v))
+            pairs.sort(key=lambda x: x[0])
+            used_a, used_b = set(), set()
+            cnt = 0
+            for d, u, v in pairs:
+                if u in used_a or v in used_b:
+                    continue
+                g.add_bidirectional(u, v, d, road, v_kmh)
+                used_a.add(u); used_b.add(v)
+                cnt += 1
+                if cnt >= k_pairs:
+                    break
+
         next_id = 0
-        ids_centro, next_id = add_grid(
-            cx=LON0, cy=LAT0, nx=16, ny=16, step_m=110.0, rotation_deg=-22.0, start_id=next_id
+
+        # --- Patch 1: CENTRO (rectángulo rotado -22°) ---
+        # Tamaño ~1.3 x 1.3 km con calles ~110 m
+        ids_c, border_c, next_id = add_grid_patch(
+            center_xy_m=(0.0, 0.0),
+            nx=13, ny=13,
+            step_m=110.0,
+            rotation_deg=-22.0,
+            primary_mod=4,   # avenidas cada 4 calles
+            collector_mod=2, # colectoras cada 2
+            start_id=next_id
         )
 
-        # --- Grilla 2: sudeste (sin rotación), desplazada ~1.2 km SE ---
-        # Corrimiento: 1.2 km E y 1.0 km S aprox.
-        dlon_e, dlat_s = meters_to_deg(LAT0, 1200.0, -1000.0)
-        LON_SE = LON0 + dlon_e
-        LAT_SE = LAT0 + dlat_s
-        ids_se, next_id = add_grid(
-            cx=LON_SE, cy=LAT_SE, nx=14, ny=12, step_m=115.0, rotation_deg=0.0, start_id=next_id
+        # --- Patch 2: SUDESTE (cardinal), al este y un poco al sur del centro ---
+        # Offset aprox.: +1.35 km Este, -0.55 km Sur
+        ids_se, border_se, next_id = add_grid_patch(
+            center_xy_m=(1350.0, -550.0),
+            nx=12, ny=12,
+            step_m=115.0,
+            rotation_deg=0.0,
+            primary_mod=4,
+            collector_mod=2,
+            start_id=next_id
         )
 
-        # --- Arteria primaria diagonal (RN-9 aproximada) que conecta ambos sectores ---
-        def add_polyline(points_ll: List[Tuple[float, float]], v_kmh: float = 70.0):
-            nonlocal next_id
-            prev = None
-            for lon, lat in points_ll:
-                nid = next_id
-                next_id += 1
-                g.add_node(nid, lat, lon)
-                if prev is not None:
-                    n1, n2 = g.get_node(prev), g.get_node(nid)
-                    dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
-                    g.add_edge(prev, nid, dist, RoadClass.PRIMARY, v_kmh)
-                    g.add_edge(nid, prev, dist, RoadClass.PRIMARY, v_kmh)
-                prev = nid
-            return prev  # último id
+        # --- Patch 3: NOROESTE (chico), cerca del río ---
+        # Offset aprox.: -900 m Oeste, +600 m Norte
+        ids_nw, border_nw, next_id = add_grid_patch(
+            center_xy_m=(-900.0, 600.0),
+            nx=8, ny=7,
+            step_m=110.0,
+            rotation_deg=-22.0,
+            primary_mod=4,
+            collector_mod=2,
+            start_id=next_id
+        )
 
-        # Trazado aproximado: noroeste -> centro -> sudeste
-        poly = [
-            (LON0 - 0.018, LAT0 + 0.010),
-            (LON0 - 0.007, LAT0 + 0.003),
-            (LON0, LAT0),
-            (LON0 + 0.006, LAT0 - 0.004),
-            (LON_SE + 0.003, LAT_SE - 0.003),
-            (LON_SE + 0.010, LAT_SE - 0.010),
+        # --- Diagonal primaria RN-9 (SW→NE) ---
+        # Polilínea en coordenadas locales (m) que atraviesa ambas zonas
+        rn9_xy = [
+            (-2000.0, -1300.0),
+            (-1200.0, -800.0),
+            (-400.0, -300.0),
+            (0.0, 0.0),
+            (600.0, 350.0),
+            (1200.0, 800.0),
+            (1900.0, 1250.0),
         ]
-        add_polyline(poly)
+        v_pri = 70.0
+        prev_id = None
+        rn9_ids: List[int] = []
+        for (x, y) in rn9_xy:
+            lon, lat = to_lonlat(x, y)
+            g.add_node(next_id, lat, lon)
+            rn9_ids.append(next_id)
+            if prev_id is not None:
+                n1, n2 = g.get_node(prev_id), g.get_node(next_id)
+                dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
+                g.add_bidirectional(prev_id, next_id, dist, RoadClass.PRIMARY, v_pri)
+            prev_id = next_id
+            next_id += 1
+
+        # Enlaces de la diagonal a las grillas cercanas
+        def attach_poly_to_patch(poly_ids: List[int], border: List[int], *, every: int, max_dist_m: float):
+            for i, pid in enumerate(poly_ids):
+                if i % every != 0:
+                    continue
+                pn = g.get_node(pid)
+                # buscar vecino más cercano del borde bajo umbral
+                best = None
+                best_d = 1e18
+                for b in border:
+                    bn = g.get_node(b)
+                    d = haversine_km(pn.lat, pn.lon, bn.lat, bn.lon) * 1000.0
+                    if d < best_d:
+                        best_d, best = d, b
+                if best is not None and best_d <= max_dist_m:
+                    g.add_bidirectional(pid, best, best_d, RoadClass.COLLECTOR, 50.0)
+
+        attach_poly_to_patch(rn9_ids, border_c, every=1, max_dist_m=220.0)
+        attach_poly_to_patch(rn9_ids, border_se, every=1, max_dist_m=220.0)
+        attach_poly_to_patch(rn9_ids, border_nw, every=2, max_dist_m=250.0)
+
+        # --- Conectores suaves entre patches (para continuidad) ---
+        connect_nearest(border_c, border_se, k_pairs=10, max_dist_m=240.0, road=RoadClass.COLLECTOR, v_kmh=45.0)
+        connect_nearest(border_c, border_nw, k_pairs=6, max_dist_m=260.0, road=RoadClass.COLLECTOR, v_kmh=45.0)
 
         return g
 
@@ -341,8 +414,8 @@ class GeoLowerBoundHeuristic(Heuristic):
         self.vmax_kmh = vmax_kmh
 
     def estimate(self, graph: Graph, node_id: NodeId, goal_id: NodeId, *, hour: int) -> Seconds:
-        n, g = graph.get_node(node_id), graph.get_node(goal_id)
-        dist_km = haversine_km(n.lat, n.lon, g.lat, g.lon)
+        n, g2 = graph.get_node(node_id), graph.get_node(goal_id)
+        dist_km = haversine_km(n.lat, n.lon, g2.lat, g2.lon)
         return (dist_km / max(self.vmax_kmh, 1e-6)) * 3600.0
 
 
@@ -351,8 +424,8 @@ class LearnedHistoricalHeuristic(Heuristic):
         self.v95 = vmax95_by_hour or {h: 65.0 for h in range(24)}
 
     def estimate(self, graph: Graph, node_id: NodeId, goal_id: NodeId, *, hour: int) -> Seconds:
-        n, g = graph.get_node(node_id), graph.get_node(goal_id)
-        dist_km = haversine_km(n.lat, n.lon, g.lat, g.lon)
+        n, g2 = graph.get_node(node_id), graph.get_node(goal_id)
+        dist_km = haversine_km(n.lat, n.lon, g2.lat, g2.lon)
         vmax = max(self.v95.get(hour, 60.0), 1e-6)
         return (dist_km / vmax) * 3600.0
 
@@ -654,17 +727,15 @@ class HeldKarpExact(MultiStopSolver):
                     cand = cj + time_matrix[j][k]
                     if cand < dp[nm][k]:
                         dp[nm][k] = cand; prv[nm][k] = j
-
         full = ALL - 1
         if mode == RouteMode.VISIT_ALL_CIRCUIT:
-            best, last = inf, -1
+            best, last = float("inf"), -1
             for j in range(n):
                 cand = dp[full][j] + time_matrix[j][0]
                 if cand < best:
                     best, last = cand, j
         else:
             last = min(range(n), key=lambda j: dp[full][j])
-
         order = []
         mask = full
         while last != -1:
@@ -810,16 +881,13 @@ class TestJM(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    # Smoke test
+    # Smoke test rápido
     g = Graph.build_jesus_maria_hardcoded()
-    traffic = HistoricalTrafficModel()
-    heuristic = HybridConservativeHeuristic(LearnedHistoricalHeuristic(), GeoLowerBoundHeuristic())
-    route_cache = RouteCache()
-    memo = SSSPMemo()
-    pairwise = PairwiseDistanceService(AStarRouter(heuristic), DijkstraRouter(), route_cache, memo)
-    service = RoutingService(g, traffic, heuristic, pairwise, HeldKarpExact(), HeuristicRoute(), RouteSplicer())
-    # tomar dos nodos cualesquiera
+    t = HistoricalTrafficModel()
+    h = HybridConservativeHeuristic(LearnedHistoricalHeuristic(), GeoLowerBoundHeuristic())
+    pair = PairwiseDistanceService(AStarRouter(h), DijkstraRouter(), RouteCache(), SSSPMemo())
+    svc = RoutingService(g, t, h, pair, HeldKarpExact(), HeuristicRoute(), RouteSplicer())
     nodes = list(g.iter_nodes())
     src, dst = nodes[0].id, nodes[-1].id
-    leg = service.route_single(src, dst, hour=8)
-    print(f"Smoke: {src}→{dst} en {leg.seconds:.1f}s, {leg.distance_m/1000:.2f} km")
+    leg = svc.route_single(src, dst, hour=8)
+    print(f"Smoke: {src}→{dst}: {leg.seconds:.1f}s · {leg.distance_m/1000:.2f} km")

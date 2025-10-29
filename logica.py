@@ -288,7 +288,7 @@ class Graph:
         # Tamaño ~1.3 x 1.3 km con calles ~110 m
         ids_c, border_c, next_id = add_grid_patch(
             center_xy_m=(0.0, 0.0),
-            nx=12, ny=13,
+            nx=11, ny=13,
             step_m=115.0,
             rotation_deg=-23,
             primary_mod=4,   # avenidas cada 4 calles
@@ -299,7 +299,7 @@ class Graph:
         # --- Patch 2: SUDESTE (cardinal), al este y un poco al sur del centro ---
         # Offset aprox.: +1.35 km Este, -0.55 km Sur
         ids_se, border_se, next_id = add_grid_patch(
-            center_xy_m=(1250.0, -550.0),
+            center_xy_m=(750.0, -250.0),
             nx=5, ny=8,
             step_m=115.0,
             rotation_deg=0.0,

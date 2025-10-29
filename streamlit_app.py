@@ -125,6 +125,23 @@ def _unique_sorted(values: List[float]) -> List[float]:
     return s
 
 
+def _rotate_point(lon: float, lat: float, angle_deg: float, center_lon: float, center_lat: float) -> Tuple[float, float]:
+    """Rota un punto (lon, lat) alrededor de (center_lon, center_lat) por angle_deg grados.
+
+    Nota: para la escala de la ciudad pequeña tratamos lon/lat como coordenadas planas
+    (bueno para visualización local). No se altera la topología del grafo, sólo
+    cómo se dibuja en el mapa.
+    """
+    if angle_deg == 0:
+        return lon, lat
+    theta = math.radians(angle_deg)
+    dx = lon - center_lon
+    dy = lat - center_lat
+    rx = dx * math.cos(theta) - dy * math.sin(theta)
+    ry = dx * math.sin(theta) + dy * math.cos(theta)
+    return center_lon + rx, center_lat + ry
+
+
 def guess_steps(graph: Graph) -> Tuple[float, float]:
     """Estima la separación (lat, lon) media de la grilla del pueblito.
     Sirve para dibujar plaza y zonas.
@@ -138,7 +155,7 @@ def guess_steps(graph: Graph) -> Tuple[float, float]:
     return dlat, dlon
 
 
-def edges_geo_layers(graph: Graph, *, hour: int, color_by: str = "class") -> Tuple[pdk.Layer, pdk.Layer]:
+def edges_geo_layers(graph: Graph, *, hour: int, color_by: str = "class", rotation_deg: float = 0.0, center_lon: float = 0.0, center_lat: float = 0.0) -> Tuple[pdk.Layer, pdk.Layer]:
     """Construye capa de calles y flechas de sentido (TextLayer)."""
     road_data = []
     arrow_data = []
@@ -159,8 +176,10 @@ def edges_geo_layers(graph: Graph, *, hour: int, color_by: str = "class") -> Tup
         else:
             col = [*base_color, 120]
 
+        lon1, lat1 = _rotate_point(n1.lon, n1.lat, rotation_deg, center_lon, center_lat)
+        lon2, lat2 = _rotate_point(n2.lon, n2.lat, rotation_deg, center_lon, center_lat)
         road_data.append({
-            "path": [[n1.lon, n1.lat], [n2.lon, n2.lat]],
+            "path": [[lon1, lat1], [lon2, lat2]],
             "width": width,
             "color": col,
         })
@@ -168,9 +187,10 @@ def edges_geo_layers(graph: Graph, *, hour: int, color_by: str = "class") -> Tup
         if e.one_way:
             mid_lon = (n1.lon + n2.lon) / 2
             mid_lat = (n1.lat + n2.lat) / 2
-            angle = math.degrees(math.atan2(n2.lat - n1.lat, n2.lon - n1.lon))
+            mid_lon_r, mid_lat_r = _rotate_point(mid_lon, mid_lat, rotation_deg, center_lon, center_lat)
+            angle = math.degrees(math.atan2(n2.lat - n1.lat, n2.lon - n1.lon)) + rotation_deg
             arrow_data.append({
-                "position": [mid_lon, mid_lat],
+                "position": [mid_lon_r, mid_lat_r],
                 "text": "→",
                 "angle": angle,
                 "size": 16,
@@ -199,37 +219,37 @@ def edges_geo_layers(graph: Graph, *, hour: int, color_by: str = "class") -> Tup
     return roads, arrows
 
 
-def town_layers(graph: Graph) -> List[pdk.Layer]:
+def town_layers(graph: Graph, *, rotation_deg: float = 0.0, center_lon: float = 0.0, center_lat: float = 0.0) -> List[pdk.Layer]:
     """Parques, plaza central, agüita y casitas para darle look de pueblito."""
     dlat, dlon = guess_steps(graph)
     nodes = list(graph.iter_nodes())
     lat_c = sum(n.lat for n in nodes) / len(nodes)
     lon_c = sum(n.lon for n in nodes) / len(nodes)
 
+    # crear y rotar polígonos
+    def rot(lon, lat):
+        return _rotate_point(lon, lat, rotation_deg, center_lon, center_lat)
+
     plaza = {
         "polygon": [
-            [lon_c - 1.5 * dlon, lat_c - 1.5 * dlat],
-            [lon_c + 1.5 * dlon, lat_c - 1.5 * dlat],
-            [lon_c + 1.5 * dlon, lat_c + 1.5 * dlat],
-            [lon_c - 1.5 * dlon, lat_c + 1.5 * dlat],
+            list(rot(lon_c - 1.5 * dlon, lat_c - 1.5 * dlat)),
+            list(rot(lon_c + 1.5 * dlon, lat_c - 1.5 * dlat)),
+            list(rot(lon_c + 1.5 * dlon, lat_c + 1.5 * dlat)),
+            list(rot(lon_c - 1.5 * dlon, lat_c + 1.5 * dlat)),
         ]
     }
-    park_sw = {
-        "polygon": [
-            [lon_c - 3.8 * dlon, lat_c - 3.8 * dlat],
-            [lon_c - 2.4 * dlon, lat_c - 3.8 * dlat],
-            [lon_c - 2.4 * dlon, lat_c - 2.6 * dlat],
-            [lon_c - 3.8 * dlon, lat_c - 2.6 * dlat],
-        ]
-    }
-    laguna = {
-        "polygon": [
-            [lon_c + 3.0 * dlon, lat_c + 2.2 * dlat],
-            [lon_c + 4.4 * dlon, lat_c + 2.0 * dlat],
-            [lon_c + 4.8 * dlon, lat_c + 3.0 * dlat],
-            [lon_c + 3.5 * dlon, lat_c + 3.2 * dlat],
-        ]
-    }
+    park_sw = {"polygon": [
+        list(rot(lon_c - 3.8 * dlon, lat_c - 3.8 * dlat)),
+        list(rot(lon_c - 2.4 * dlon, lat_c - 3.8 * dlat)),
+        list(rot(lon_c - 2.4 * dlon, lat_c - 2.6 * dlat)),
+        list(rot(lon_c - 3.8 * dlon, lat_c - 2.6 * dlat)),
+    ]}
+    laguna = {"polygon": [
+        list(rot(lon_c + 3.0 * dlon, lat_c + 2.2 * dlat)),
+        list(rot(lon_c + 4.4 * dlon, lat_c + 2.0 * dlat)),
+        list(rot(lon_c + 4.8 * dlon, lat_c + 3.0 * dlat)),
+        list(rot(lon_c + 3.5 * dlon, lat_c + 3.2 * dlat)),
+    ]}
 
     # Casitas: muestreamos algunos nodos alejados de la plaza
     rnd = random.Random(17)
@@ -237,7 +257,8 @@ def town_layers(graph: Graph) -> List[pdk.Layer]:
     for n in rnd.sample(nodes, k=min(120, len(nodes))):
         if haversine_km(n.lat, n.lon, lat_c, lon_c) < 0.25:  # cerca de la plaza: menos casas
             continue
-        house_pts.append({"lon": n.lon, "lat": n.lat})
+        lon_r, lat_r = _rotate_point(n.lon, n.lat, rotation_deg, center_lon, center_lat)
+        house_pts.append({"lon": lon_r, "lat": lat_r})
 
     lay_plaza = pdk.Layer(
         "PolygonLayer",
@@ -277,7 +298,7 @@ def town_layers(graph: Graph) -> List[pdk.Layer]:
     return [lay_laguna, lay_park, lay_plaza, lay_houses]
 
 
-def route_layers(route_legs: List[RouteLeg], graph: Graph) -> Tuple[pdk.Layer, pdk.Layer]:
+def route_layers(route_legs: List[RouteLeg], graph: Graph, *, rotation_deg: float = 0.0, center_lon: float = 0.0, center_lat: float = 0.0) -> Tuple[pdk.Layer, pdk.Layer]:
     """Capa de la ruta final y marcadores (origen/destinos)."""
     if not route_legs:
         return None, None  # type: ignore
@@ -287,12 +308,19 @@ def route_layers(route_legs: List[RouteLeg], graph: Graph) -> Tuple[pdk.Layer, p
 
     # Origen
     n0 = graph.get_node(route_legs[0].src)
-    markers.append({"lon": n0.lon, "lat": n0.lat, "kind": "Origen"})
+    lon0, lat0 = _rotate_point(n0.lon, n0.lat, rotation_deg, center_lon, center_lat)
+    markers.append({"lon": lon0, "lat": lat0, "kind": "Origen"})
 
     for leg in route_legs:
-        coords = [[graph.get_node(n).lon, graph.get_node(n).lat] for n in leg.path]
+        coords = []
+        for n in leg.path:
+            nn = graph.get_node(n)
+            lon_r, lat_r = _rotate_point(nn.lon, nn.lat, rotation_deg, center_lon, center_lat)
+            coords.append([lon_r, lat_r])
         path_coords.append({"path": coords})
-        markers.append({"lon": graph.get_node(leg.dst).lon, "lat": graph.get_node(leg.dst).lat, "kind": "Destino"})
+        dnode = graph.get_node(leg.dst)
+        dlon_r, dlat_r = _rotate_point(dnode.lon, dnode.lat, rotation_deg, center_lon, center_lat)
+        markers.append({"lon": dlon_r, "lat": dlat_r, "kind": "Destino"})
 
     lay_path = pdk.Layer(
         "PathLayer",
@@ -440,8 +468,9 @@ if clear:
 st.title("🏘️ Pueblito: Rutas Inteligentes")
 st.caption("A* / Dijkstra + heurística admisible, batching par-a-par y TSP (Held-Karp / NN + 2-opt)")
 
-roads_layer, arrows_layer = edges_geo_layers(graph, hour=hour, color_by=color_by)
-extras = town_layers(graph)
+# Las capas se construyen más abajo para poder pasar rotation (bearing) y centro
+roads_layer = arrows_layer = None
+extras = []
 route_leg_list: List[RouteLeg] = []
 result_summary = None
 
@@ -457,7 +486,7 @@ if calc and destinations:
     route_leg_list = res.legs
     result_summary = res
 
-route_layer, points_layer = route_layers(route_leg_list, graph)
+# (Las capas se construyen más abajo, después de leer sliders de cámara)
 
 # Cámara: centrada en el centro del grafo (o en origen / coordenadas manuales)
 # Para inicializar el mapa en coordenadas específicas pedidas por el usuario
@@ -491,6 +520,11 @@ elif center_mode == "Origen seleccionado":
         lat_c, lon_c = lat_c_default, lon_c_default
 else:  # Coordenadas manuales
     lat_c, lon_c = manual_lat, manual_lon
+
+# Construir capas con rotación de la generación de la ciudad (bearing)
+roads_layer, arrows_layer = edges_geo_layers(graph, hour=hour, color_by=color_by, rotation_deg=bearing, center_lon=lon_c, center_lat=lat_c)
+extras = town_layers(graph, rotation_deg=bearing, center_lon=lon_c, center_lat=lat_c)
+route_layer, points_layer = route_layers(route_leg_list, graph, rotation_deg=bearing, center_lon=lon_c, center_lat=lat_c)
 
 layers = [roads_layer, arrows_layer, *(extras or [])]
 if route_layer:

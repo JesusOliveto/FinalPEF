@@ -299,7 +299,7 @@ class Graph:
         # --- Patch 2: SUDESTE (cardinal), al este y un poco al sur del centro ---
         # Offset aprox.: +1.35 km Este, -0.55 km Sur
         ids_se, border_se, next_id = add_grid_patch(
-            center_xy_m=(900.0, -300.0),
+            center_xy_m=(850.0, -250.0),
             nx=5, ny=8,
             step_m=100.0,
             rotation_deg=0.0,

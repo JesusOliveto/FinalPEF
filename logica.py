@@ -288,7 +288,7 @@ class Graph:
         # Tamaño ~1.3 x 1.3 km con calles ~110 m
         ids_c, border_c, next_id = add_grid_patch(
             center_xy_m=(0.0, 0.0),
-            nx=11, ny=13,
+            nx=10, ny=13,
             step_m=115.0,
             rotation_deg=-23,
             primary_mod=4,   # avenidas cada 4 calles
@@ -301,7 +301,7 @@ class Graph:
         ids_se, border_se, next_id = add_grid_patch(
             center_xy_m=(900.0, -300.0),
             nx=5, ny=8,
-            step_m=115.0,
+            step_m=100.0,
             rotation_deg=0.0,
             primary_mod=4,
             collector_mod=2,

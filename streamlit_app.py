@@ -459,10 +459,38 @@ if calc and destinations:
 
 route_layer, points_layer = route_layers(route_leg_list, graph)
 
-# Cámara: centrada en el centro del grafo
+# Cámara: centrada en el centro del grafo (o en origen / coordenadas manuales)
+# Para inicializar el mapa en coordenadas específicas pedidas por el usuario
+# usamos estas constantes por defecto. Si preferís el centro de la ciudad,
+# activá "Centro de ciudad" en el sidebar.
 nodes = list(graph.iter_nodes())
-lat_c = sum(n.lat for n in nodes) / len(nodes)
-lon_c = sum(n.lon for n in nodes) / len(nodes)
+# coordenadas solicitadas
+lat_c_default = -30.979684570698357
+lon_c_default = -64.09442418858212
+
+with st.sidebar.expander("Mapa / Cámara", expanded=False):
+    center_mode = st.radio(
+        "Centrar mapa en:", ("Centro de ciudad", "Origen seleccionado", "Coordenadas manuales"), index=2
+    )
+    bearing = st.slider("Orientación (bearing, grados)", -180, 180, 0)
+    pitch = st.slider("Inclinación (pitch)", 0, 60, 0)
+    zoom = st.slider("Zoom inicial", 8.0, 18.0, 14.2)
+    if center_mode == "Coordenadas manuales":
+        manual_lat = st.number_input("Latitud manual", value=float(lat_c_default))
+        manual_lon = st.number_input("Longitud manual", value=float(lon_c_default))
+
+# Resolver centro según modo seleccionado
+if center_mode == "Centro de ciudad":
+    lat_c, lon_c = lat_c_default, lon_c_default
+elif center_mode == "Origen seleccionado":
+    try:
+        n0 = graph.get_node(origin)
+        lat_c, lon_c = n0.lat, n0.lon
+    except Exception:
+        # si algo falla (p.ej. origin no definido), fallback al centro por defecto
+        lat_c, lon_c = lat_c_default, lon_c_default
+else:  # Coordenadas manuales
+    lat_c, lon_c = manual_lat, manual_lon
 
 layers = [roads_layer, arrows_layer, *(extras or [])]
 if route_layer:

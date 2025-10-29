@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
 """
 logica.py — Motor de ruteo para “Pueblito: Rutas Inteligentes”
-Versión 100% hardcodeada con una red que imita la traza de Jesús María (Córdoba).
-
-Componentes:
-- Graph.build_jesus_maria_hardcoded(): 3 parches de grilla + diagonal primaria (RN-9 aprox.)
-- Algoritmos: Dijkstra y A* (heurística admisible).
-- Matriz par-a-par con batching y TSP (Held-Karp o NN+2opt).
-
-No usa OSM ni geocodificación.
+Foco: creación de rutas en una red hardcodeada que imita Jesús María (Córdoba).
+- Algoritmos: Dijkstra, A*, BFS (opcional).
+- Tráfico histórico por clase vial (PRIMARY / COLLECTOR / RESIDENTIAL).
+- Memoización SSSP + LRU de tramos; matriz par-a-par concurrente.
+- Solvers multi-stop: Held-Karp (DP) y heurístico (NN + 2-opt).
+- Generador iter_path_edges para recorrer aristas de un camino.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -18,10 +17,9 @@ from typing import Dict, List, Tuple, Iterable, Iterator, Optional, Any, Callabl
 from collections import defaultdict, OrderedDict
 from math import radians, sin, cos, asin, sqrt
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import random
 import unittest
-import io, time, cProfile, pstats
-
+import cProfile, pstats
+import io
 
 # ==========================================================
 # Tipos y enums
@@ -29,7 +27,7 @@ import io, time, cProfile, pstats
 class Algorithm(str, Enum):
     ASTAR = "astar"
     DIJKSTRA = "dijkstra"
-    BFS = "bfs"
+    BFS = "bfs"  # útil para grafos no ponderados o depuración
 
 
 class RouteMode(str, Enum):
@@ -114,64 +112,21 @@ class Graph:
             for e in lst:
                 yield u, e
 
-    # ---- ciudad sintética genérica (queda por compatibilidad)
-    @staticmethod
-    def build_small_town(
-        *,
-        seed: int = 42,
-        blocks_x: int = 10,
-        blocks_y: int = 10,
-        spacing_m: float = 120.0,
-        base_lat: float = -30.9859,
-        base_lon: float = -64.0947,
-    ) -> "Graph":
-        rnd = random.Random(seed)
-        g = Graph()
-        dlat = spacing_m / 111000.0
-        dlon = dlat / cos(radians(base_lat))
-
-        def nid(r: int, c: int) -> int:
-            return r * blocks_x + c
-
-        for r in range(blocks_y):
-            for c in range(blocks_x):
-                g.add_node(nid(r, c), base_lat + r * dlat, base_lon + c * dlon)
-
-        for r in range(blocks_y):
-            for c in range(blocks_x):
-                u = nid(r, c)
-                if c + 1 < blocks_x:
-                    v = nid(r, c + 1)
-                    n1, n2 = g.get_node(u), g.get_node(v)
-                    dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
-                    g.add_bidirectional(u, v, dist, RoadClass.RESIDENTIAL, 40.0)
-                if r + 1 < blocks_y:
-                    v = nid(r + 1, c)
-                    n1, n2 = g.get_node(u), g.get_node(v)
-                    dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
-                    g.add_bidirectional(u, v, dist, RoadClass.RESIDENTIAL, 40.0)
-        return g
-
-    # ---- NUEVO: Jesús María hardcodeado (sin OSM)
+    # ---- Jesús María hardcodeado (mantiene tu configuración manual)
     @staticmethod
     def build_jesus_maria_hardcoded() -> "Graph":
         """
         Red vial estilizada que imita Jesús María:
-        - Grilla Centro (rotada -22°).
-        - Grilla Sudeste (cardinal).
-        - Grilla Noroeste pequeña (rotada -22°).
-        - Diagonal primaria SW→NE (RN-9 aprox.) con enlaces.
-        - Conectores entre bordes de patches (sin solapamientos caóticos).
+        - 3 parches de grilla (centro rotado ~-23°, sudeste cardinal, noroeste chico rotado)
+        - Diagonal primaria SW→NE (RN-9 aprox.) con enlaces
+        - Políticas de mano única / doble mano por clase
         """
         g = Graph()
 
-        # Centro de referencia (aprox. Plaza San Martín)
         LAT0 = -30.980556
         LON0 = -64.091944
-
-        # Conversión plano local (metros) <-> lat/lon
-        Kx = 111000.0 * cos(radians(LAT0))  # m por grado lon
-        Ky = 111000.0                        # m por grado lat
+        Kx = 111000.0 * cos(radians(LAT0))  # m/° lon
+        Ky = 111000.0                        # m/° lat
 
         def to_lonlat(x_m: float, y_m: float) -> Tuple[float, float]:
             return (LON0 + x_m / Kx, LAT0 + y_m / Ky)
@@ -182,12 +137,14 @@ class Graph:
             th = radians(deg)
             return dx * cos(th) - dy * sin(th), dx * sin(th) + dy * cos(th)
 
-        # === Política de doble mano ===
-        BIDIR_PRIMARY = True           # avenidas
-        BIDIR_COLLECTOR = False        # colectoras
-        BIDIR_RESIDENTIAL = False      # residenciales
-        BIDIR_RN9 = True               # diagonal principal (RN-9)
-        BIDIR_CONNECTORS = False       # enlaces entre parches y a la RN-9
+        # Políticas de doble mano
+        BIDIR = {
+            RoadClass.PRIMARY: True,
+            RoadClass.COLLECTOR: False,
+            RoadClass.RESIDENTIAL: False,
+        }
+        BIDIR_RN9 = True
+        BIDIR_CONNECTORS = False
 
         def add_grid_patch(
             *,
@@ -199,61 +156,42 @@ class Graph:
             collector_mod: int,
             start_id: int
         ) -> Tuple[List[List[int]], List[int], int]:
-            """
-            Crea una grilla rectangular centrada en center_xy_m, rotada.
-            Devuelve: matriz ids, ids_de_borde, next_id.
-            """
             cx, cy = center_xy_m
             ids = [[-1] * nx for _ in range(ny)]
             next_id = start_id
 
-            # 1) nodos
+            # nodos
             for r in range(ny):
                 for c in range(nx):
-                    # coords locales respecto al centro del patch
                     dx = (c - (nx - 1) / 2.0) * step_m
                     dy = (r - (ny - 1) / 2.0) * step_m
                     rx, ry = rot_xy(dx, dy, rotation_deg)
-                    X = cx + rx
-                    Y = cy + ry
+                    X, Y = cx + rx, cy + ry
                     lon, lat = to_lonlat(X, Y)
                     g.add_node(next_id, lat, lon)
                     ids[r][c] = next_id
                     next_id += 1
 
-            # velocidades típicas
             v_res, v_col, v_pri = 35.0, 45.0, 65.0
 
             def class_h(row: int) -> RoadClass:
-                # horizontal (E-O): depende de fila
-                if row % primary_mod == 0:
-                    return RoadClass.PRIMARY
-                if row % collector_mod == 0:
-                    return RoadClass.COLLECTOR
+                if row % primary_mod == 0: return RoadClass.PRIMARY
+                if row % collector_mod == 0: return RoadClass.COLLECTOR
                 return RoadClass.RESIDENTIAL
 
             def class_v(col: int) -> RoadClass:
-                # vertical (N-S): depende de columna
-                if col % primary_mod == 0:
-                    return RoadClass.PRIMARY
-                if col % collector_mod == 0:
-                    return RoadClass.COLLECTOR
+                if col % primary_mod == 0: return RoadClass.PRIMARY
+                if col % collector_mod == 0: return RoadClass.COLLECTOR
                 return RoadClass.RESIDENTIAL
 
-            # helper: agrega mano única alternando por fila/columna
             def add_one_way(u: int, v: int, dist: float, rc: RoadClass, sp: float, *, is_horizontal: bool, r: int, c: int):
                 if is_horizontal:
-                    if (r % 2) == 0:
-                        g.add_edge(u, v, dist, rc, sp, one_way=True)
-                    else:
-                        g.add_edge(v, u, dist, rc, sp, one_way=True)
+                    if (r % 2) == 0: g.add_edge(u, v, dist, rc, sp, one_way=True)
+                    else:            g.add_edge(v, u, dist, rc, sp, one_way=True)
                 else:
-                    if (c % 2) == 0:
-                        g.add_edge(u, v, dist, rc, sp, one_way=True)
-                    else:
-                        g.add_edge(v, u, dist, rc, sp, one_way=True)
+                    if (c % 2) == 0: g.add_edge(u, v, dist, rc, sp, one_way=True)
+                    else:            g.add_edge(v, u, dist, rc, sp, one_way=True)
 
-            # 2) aristas
             for r in range(ny):
                 for c in range(nx):
                     u = ids[r][c]
@@ -263,22 +201,17 @@ class Graph:
                         dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
                         rc = class_h(r)
                         sp = v_pri if rc == RoadClass.PRIMARY else (v_col if rc == RoadClass.COLLECTOR else v_res)
-                        if (rc == RoadClass.PRIMARY and BIDIR_PRIMARY) or (rc == RoadClass.COLLECTOR and BIDIR_COLLECTOR) or (rc == RoadClass.RESIDENTIAL and BIDIR_RESIDENTIAL):
-                            g.add_bidirectional(u, v, dist, rc, sp)
-                        else:
-                            add_one_way(u, v, dist, rc, sp, is_horizontal=True, r=r, c=c)
+                        if BIDIR[rc]: g.add_bidirectional(u, v, dist, rc, sp)
+                        else:         add_one_way(u, v, dist, rc, sp, is_horizontal=True, r=r, c=c)
                     if r + 1 < ny:
                         v = ids[r + 1][c]
                         n1, n2 = g.get_node(u), g.get_node(v)
                         dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
                         rc = class_v(c)
                         sp = v_pri if rc == RoadClass.PRIMARY else (v_col if rc == RoadClass.COLLECTOR else v_res)
-                        if (rc == RoadClass.PRIMARY and BIDIR_PRIMARY) or (rc == RoadClass.COLLECTOR and BIDIR_COLLECTOR) or (rc == RoadClass.RESIDENTIAL and BIDIR_RESIDENTIAL):
-                            g.add_bidirectional(u, v, dist, rc, sp)
-                        else:
-                            add_one_way(u, v, dist, rc, sp, is_horizontal=False, r=r, c=c)
+                        if BIDIR[rc]: g.add_bidirectional(u, v, dist, rc, sp)
+                        else:         add_one_way(u, v, dist, rc, sp, is_horizontal=False, r=r, c=c)
 
-            # 3) ids de borde (para conectores entre patches)
             border: List[int] = []
             for r in range(ny):
                 for c in range(nx):
@@ -287,7 +220,6 @@ class Graph:
             return ids, border, next_id
 
         def connect_nearest(border_a: List[int], border_b: List[int], *, k_pairs: int, max_dist_m: float, road: RoadClass, v_kmh: float):
-            # Construye pares más cercanos (greedy) bajo umbral y añade colectoras/primarias
             pairs: List[Tuple[float, int, int]] = []
             for u in border_a:
                 n1 = g.get_node(u)
@@ -302,116 +234,59 @@ class Graph:
             for d, u, v in pairs:
                 if u in used_a or v in used_b:
                     continue
-                # Respeta política de conectores
-                if BIDIR_CONNECTORS:
-                    g.add_bidirectional(u, v, d, road, v_kmh)
+                if BIDIR_CONNECTORS: g.add_bidirectional(u, v, d, road, v_kmh)
                 else:
-                    if (cnt % 2) == 0:
-                        g.add_edge(u, v, d, road, v_kmh, one_way=True)
-                    else:
-                        g.add_edge(v, u, d, road, v_kmh, one_way=True)
+                    if (cnt % 2) == 0: g.add_edge(u, v, d, road, v_kmh, one_way=True)
+                    else:              g.add_edge(v, u, d, road, v_kmh, one_way=True)
                 used_a.add(u); used_b.add(v)
                 cnt += 1
-                if cnt >= k_pairs:
-                    break
+                if cnt >= k_pairs: break
 
         next_id = 0
 
-        # --- Patch 1: CENTRO (rectángulo rotado -22°) ---
-        # Tamaño ~1.3 x 1.3 km con calles ~110 m
-        ids_c, border_c, next_id = add_grid_patch(
-            center_xy_m=(0.0, 0.0),
-            nx=10, ny=13,
-            step_m=115.0,
-            rotation_deg=-23,
-            primary_mod=4,   # avenidas cada 4 calles
-            collector_mod=2, # colectoras cada 2
-            start_id=next_id
-        )
+        # Parches de grilla
+        _, border_c, next_id  = add_grid_patch(center_xy_m=(0.0, 0.0),      nx=10, ny=13, step_m=115.0, rotation_deg=-23, primary_mod=4, collector_mod=2, start_id=next_id)
+        _, border_se, next_id = add_grid_patch(center_xy_m=(850.0, -250.0), nx=5,  ny=8,  step_m=100.0, rotation_deg=0.0,  primary_mod=4, collector_mod=2, start_id=next_id)
+        _, border_nw, next_id = add_grid_patch(center_xy_m=(-900.0, 600.0), nx=8,  ny=6,  step_m=115.0, rotation_deg=-22,  primary_mod=4, collector_mod=2, start_id=next_id)
 
-        # --- Patch 2: SUDESTE (cardinal), al este y un poco al sur del centro ---
-        # Offset aprox.: +1.35 km Este, -0.55 km Sur
-        ids_se, border_se, next_id = add_grid_patch(
-            center_xy_m=(850.0, -250.0),
-            nx=5, ny=8,
-            step_m=100.0,
-            rotation_deg=0.0,
-            primary_mod=4,
-            collector_mod=2,
-            start_id=next_id
-        )
-
-        # --- Patch 3: NOROESTE (chico), cerca del río ---
-        # Offset aprox.: -900 m Oeste, +600 m Norte
-        ids_nw, border_nw, next_id = add_grid_patch(
-            center_xy_m=(-900.0, 600.0),
-            nx=8, ny=6,
-            step_m=115.0,
-            rotation_deg=-22.0,
-            primary_mod=4,
-            collector_mod=2,
-            start_id=next_id
-        )
-
-        # --- Diagonal primaria RN-9 (SW→NE) ---
-        # Polilínea en coordenadas locales (m) que atraviesa ambas zonas
-        rn9_xy = [
-            (-2000.0, -1300.0),
-            (-1200.0, -800.0),
-            (-400.0, -300.0),
-            (0.0, 0.0),
-            (600.0, 350.0),
-            (1200.0, 800.0),
-            (1900.0, 1250.0),
-        ]
+        # Diagonal RN-9 SW→NE
+        rn9_xy = [(-2000,-1300), (-1200,-800), (-400,-300), (0,0), (600,350), (1200,800), (1900,1250)]
         v_pri = 70.0
         prev_id = None
         rn9_ids: List[int] = []
-        for (x, y) in rn9_xy:
+        for x, y in rn9_xy:
             lon, lat = to_lonlat(x, y)
-            g.add_node(next_id, lat, lon)
-            rn9_ids.append(next_id)
+            g.add_node(next_id, lat, lon); rn9_ids.append(next_id)
             if prev_id is not None:
                 n1, n2 = g.get_node(prev_id), g.get_node(next_id)
                 dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
-                # RN-9 según política
-                if BIDIR_RN9:
-                    g.add_bidirectional(prev_id, next_id, dist, RoadClass.PRIMARY, v_pri)
-                else:
-                    g.add_edge(prev_id, next_id, dist, RoadClass.PRIMARY, v_pri, one_way=True)  # SW→NE
-            prev_id = next_id
-            next_id += 1
+                if BIDIR_RN9: g.add_bidirectional(prev_id, next_id, dist, RoadClass.PRIMARY, v_pri)
+                else:         g.add_edge(prev_id, next_id, dist, RoadClass.PRIMARY, v_pri, one_way=True)
+            prev_id = next_id; next_id += 1
 
-        # Enlaces de la diagonal a las grillas cercanas
+        # Enlaces RN-9 → parches
         def attach_poly_to_patch(poly_ids: List[int], border: List[int], *, every: int, max_dist_m: float):
             for i, pid in enumerate(poly_ids):
-                if i % every != 0:
-                    continue
+                if i % every != 0: continue
                 pn = g.get_node(pid)
-                # buscar vecino más cercano del borde bajo umbral
-                best = None
-                best_d = 1e18
+                best, best_d = None, 1e18
                 for b in border:
                     bn = g.get_node(b)
                     d = haversine_km(pn.lat, pn.lon, bn.lat, bn.lon) * 1000.0
-                    if d < best_d:
-                        best_d, best = d, b
+                    if d < best_d: best_d, best = d, b
                 if best is not None and best_d <= max_dist_m:
-                    if BIDIR_CONNECTORS:
-                        g.add_bidirectional(pid, best, best_d, RoadClass.COLLECTOR, 50.0)
+                    if BIDIR_CONNECTORS: g.add_bidirectional(pid, best, best_d, RoadClass.COLLECTOR, 50.0)
                     else:
-                        if (i % 2) == 0:
-                            g.add_edge(pid, best, best_d, RoadClass.COLLECTOR, 50.0, one_way=True)
-                        else:
-                            g.add_edge(best, pid, best_d, RoadClass.COLLECTOR, 50.0, one_way=True)
+                        if (i % 2) == 0: g.add_edge(pid, best, best_d, RoadClass.COLLECTOR, 50.0, one_way=True)
+                        else:            g.add_edge(best, pid, best_d, RoadClass.COLLECTOR, 50.0, one_way=True)
 
-        attach_poly_to_patch(rn9_ids, border_c, every=1, max_dist_m=220.0)
+        attach_poly_to_patch(rn9_ids, border_c,  every=1, max_dist_m=220.0)
         attach_poly_to_patch(rn9_ids, border_se, every=1, max_dist_m=220.0)
         attach_poly_to_patch(rn9_ids, border_nw, every=2, max_dist_m=250.0)
 
-        # --- Conectores suaves entre patches (para continuidad) ---
-        connect_nearest(border_c, border_se, k_pairs=10, max_dist_m=240.0, road=RoadClass.COLLECTOR, v_kmh=45.0)
-        connect_nearest(border_c, border_nw, k_pairs=6, max_dist_m=260.0, road=RoadClass.COLLECTOR, v_kmh=45.0)
+        # Conectores entre parches
+        connect_nearest(border_c,  border_se, k_pairs=10, max_dist_m=240.0, road=RoadClass.COLLECTOR, v_kmh=45.0)
+        connect_nearest(border_c,  border_nw, k_pairs=6,  max_dist_m=260.0, road=RoadClass.COLLECTOR, v_kmh=45.0)
 
         return g
 
@@ -557,11 +432,9 @@ class DijkstraRouter:
         while pq:
             d, u = heapq.heappop(pq)
             stats.queue_pops += 1
-            if d > dist[u]:
-                continue
+            if d > dist[u]: continue
             stats.expanded_nodes += 1
-            if u == dst:
-                break
+            if u == dst: break
             for e in graph.neighbors(u):
                 alt = d + traffic.travel_time_seconds(e, hour=hour)
                 if alt < dist[e.to]:
@@ -599,8 +472,7 @@ class AStarRouter:
             _, u = heapq.heappop(pq)
             stats.queue_pops += 1
             stats.expanded_nodes += 1
-            if u == dst:
-                break
+            if u == dst: break
             for e in graph.neighbors(u):
                 tentative = g_score[u] + traffic.travel_time_seconds(e, hour=hour)
                 if tentative < g_score[e.to]:
@@ -616,8 +488,29 @@ class AStarRouter:
         return RouteLeg(src, dst, path, seconds, distance_m, stats.expanded_nodes), stats
 
 
+class BFSRouter:
+    """BFS para grafos no ponderados (o ponderar todo como 1). Útil como baseline/depuración."""
+    def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int, traffic: TrafficModel, heuristic: Optional[Heuristic] = None) -> Tuple[RouteLeg, SearchStats]:
+        from collections import deque
+        q = deque([src])
+        parent: Dict[NodeId, Optional[NodeId]] = {src: None}
+        stats = SearchStats(); stats.queue_pushes += 1
+        while q:
+            u = q.popleft(); stats.queue_pops += 1; stats.expanded_nodes += 1
+            if u == dst: break
+            for e in graph.neighbors(u):
+                if e.to not in parent:
+                    parent[e.to] = u
+                    q.append(e.to); stats.queue_pushes += 1
+        path = _reconstruct(parent, src, dst)
+        # tiempo estimado: suma tiempos reales para no romper métricas
+        seconds = sum(traffic.travel_time_seconds(next(e for e in graph.neighbors(u) if e.to == v), hour=hour) for u, v in iter_path_edges(path)) if path else float("inf")
+        dist_m = _path_distance_m(graph, path)
+        return RouteLeg(src, dst, path, seconds, dist_m, stats.expanded_nodes), stats
+
+
 # ==========================================================
-# Caches y pairwise
+# Caches y par-a-par (batching)
 # ==========================================================
 class LRUCache:
     def __init__(self, capacity: int = 1024) -> None:
@@ -692,6 +585,7 @@ class PairwiseDistanceService:
         time_matrix: List[List[Seconds]] = [[float("inf")] * n for _ in range(n)]
         path_map: Dict[Tuple[int, int], List[NodeId]] = {}
 
+        # 1) SSSP memoizado (Dijkstra from-one) en paralelo
         def solve_from(i: int) -> Tuple[int, Dict[NodeId, Seconds], Dict[NodeId, Optional[NodeId]]]:
             src = waypoints[i]
             key = ("SSSP", src, hour, "dijkstra")
@@ -721,11 +615,11 @@ class PairwiseDistanceService:
 
         results: Dict[int, Tuple[Dict[NodeId, Seconds], Dict[NodeId, Optional[NodeId]]]] = {}
         with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
-            futs = [ex.submit(solve_from, i) for i in range(n)]
-            for fut in as_completed(futs):
+            for fut in as_completed([ex.submit(solve_from, i) for i in range(n)]):
                 i, dist, parent = fut.result()
                 results[i] = (dist, parent)
 
+        # 2) Construcción de matriz + uso explícito de RouteCache (tramo a tramo)
         for i in range(n):
             dist, parent = results[i]
             for j in range(n):
@@ -733,9 +627,20 @@ class PairwiseDistanceService:
                     time_matrix[i][j] = 0.0
                     path_map[(i, j)] = [waypoints[i]]
                     continue
-                dst = waypoints[j]
-                time_matrix[i][j] = float(dist.get(dst, float("inf")))
-                path_map[(i, j)] = _reconstruct(parent, waypoints[i], dst)
+                src, dst = waypoints[i], waypoints[j]
+                cache_key = ("LEG", src, dst, hour, algorithm.value)
+                cached_leg = self.route_cache.get(cache_key)
+                if cached_leg:
+                    time_matrix[i][j] = cached_leg.seconds
+                    path_map[(i, j)] = cached_leg.path
+                else:
+                    seconds = float(dist.get(dst, float("inf")))
+                    path = _reconstruct(parent, src, dst)
+                    time_matrix[i][j] = seconds
+                    path_map[(i, j)] = path
+                    # almacenamos el leg
+                    leg = RouteLeg(src, dst, path, seconds, _path_distance_m(graph, path), 0)
+                    self.route_cache.set(cache_key, leg)
         return time_matrix, path_map
 
 
@@ -750,8 +655,7 @@ class MultiStopSolver:
 class HeldKarpExact(MultiStopSolver):
     def solve(self, waypoints: List[NodeId], time_matrix: List[List[Seconds]], *, mode: RouteMode) -> List[int]:
         n = len(waypoints)
-        if n <= 1:
-            return list(range(n))
+        if n <= 1: return list(range(n))
         from math import inf
         ALL = 1 << n
         dp = [[inf] * n for _ in range(ALL)]
@@ -775,8 +679,7 @@ class HeldKarpExact(MultiStopSolver):
             best, last = float("inf"), -1
             for j in range(n):
                 cand = dp[full][j] + time_matrix[j][0]
-                if cand < best:
-                    best, last = cand, j
+                if cand < best: best, last = cand, j
         else:
             last = min(range(n), key=lambda j: dp[full][j])
         order = []
@@ -863,10 +766,13 @@ class RoutingService:
         self.splicer = splicer
         self.router_dijkstra = DijkstraRouter()
         self.router_astar = AStarRouter(default_heuristic=heuristic)
+        self.router_bfs = BFSRouter()
 
     def route_single(self, src: NodeId, dst: NodeId, *, hour: int, algorithm: Algorithm = Algorithm.ASTAR) -> RouteLeg:
-        if algorithm == Algorithm.DIJKSTRA or algorithm == Algorithm.BFS:
+        if algorithm == Algorithm.DIJKSTRA:
             leg, _ = self.router_dijkstra.route(self.graph, src, dst, hour=hour, traffic=self.traffic)
+        elif algorithm == Algorithm.BFS:
+            leg, _ = self.router_bfs.route(self.graph, src, dst, hour=hour, traffic=self.traffic)
         else:
             leg, _ = self.router_astar.route(self.graph, src, dst, hour=hour, traffic=self.traffic, heuristic=self.heuristic)
         return leg
@@ -892,7 +798,7 @@ class RoutingService:
 
 
 # ==========================================================
-# Helpers geo
+# Helpers geo / profiling
 # ==========================================================
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371.0
@@ -913,6 +819,18 @@ def _path_distance_m(graph: Graph, path: List[NodeId]) -> float:
     return d
 
 
+def run_profiled(fn: Callable, *args, **kwargs) -> str:
+    """Devuelve un resumen pstats de ejecutar fn(*args, **kwargs)."""
+    pr = cProfile.Profile()
+    pr.enable()
+    fn(*args, **kwargs)
+    pr.disable()
+    s = io.StringIO()
+    ps = pstats.Stats(pr, stream=s).sort_stats("cumtime")
+    ps.print_stats(20)
+    return s.getvalue()
+
+
 # ==========================================================
 # Tests mínimos
 # ==========================================================
@@ -921,6 +839,17 @@ class TestJM(unittest.TestCase):
         g = Graph.build_jesus_maria_hardcoded()
         self.assertGreater(len(list(g.iter_nodes())), 0)
         self.assertGreater(len(list(g.iter_edges())), 0)
+
+    def test_routing_multi(self):
+        g = Graph.build_jesus_maria_hardcoded()
+        t = HistoricalTrafficModel()
+        h = HybridConservativeHeuristic(LearnedHistoricalHeuristic(), GeoLowerBoundHeuristic())
+        pair = PairwiseDistanceService(AStarRouter(h), DijkstraRouter(), RouteCache(), SSSPMemo())
+        svc = RoutingService(g, t, h, pair, HeldKarpExact(), HeuristicRoute(), RouteSplicer())
+        nodes = list(g.iter_nodes())
+        req = RouteRequest(origin=nodes[0].id, destinations=[nodes[5].id, nodes[20].id, nodes[-1].id], hour=8, mode=RouteMode.VISIT_ALL_OPEN, algorithm=Algorithm.ASTAR)
+        res = svc.route(req)
+        self.assertGreater(len(res.legs), 0)
 
 
 if __name__ == "__main__":

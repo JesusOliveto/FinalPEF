@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 streamlit_app.py — UI para “Pueblito: Rutas Inteligentes”
-Usa la red hardcodeada que imita Jesús María (sin OSM).
+Foco: calcular mejores rutas en Jesús María (sin OSM).
 """
 from __future__ import annotations
 
-import math
-import random
 import json
+import random
 from typing import Dict, List, Tuple
 
 import streamlit as st
@@ -24,11 +23,10 @@ from logica import (
 # =================== UI config ===================
 st.set_page_config(page_title="Pueblito · Rutas Inteligentes", page_icon="🏘️", layout="wide")
 
-COLOR_BG = [14, 18, 24]
-COLOR_ROAD_PRIMARY = [45, 85, 255]
+COLOR_ROAD_PRIMARY   = [45, 85, 255]
 COLOR_ROAD_COLLECTOR = [92, 112, 177]
-COLOR_ROAD_RES = [150, 160, 180]
-COLOR_ROUTE = [12, 180, 105]
+COLOR_ROAD_RES       = [150, 160, 180]
+COLOR_ROUTE          = [12, 180, 105]
 LAT_JM = -30.9859
 LON_JM = -64.0947
 
@@ -40,13 +38,8 @@ def load_services():
     heuristic = HybridConservativeHeuristic(LearnedHistoricalHeuristic(), GeoLowerBoundHeuristic())
     pairwise = PairwiseDistanceService(AStarRouter(heuristic), DijkstraRouter(), RouteCache(), SSSPMemo(), max_workers=4)
     service = RoutingService(
-        graph=graph,
-        traffic=traffic,
-        heuristic=heuristic,
-        pairwise_service=pairwise,
-        solver_exact=HeldKarpExact(),
-        solver_heur=HeuristicRoute(restarts=4),
-        splicer=RouteSplicer(),
+        graph=graph, traffic=traffic, heuristic=heuristic, pairwise_service=pairwise,
+        solver_exact=HeldKarpExact(), solver_heur=HeuristicRoute(restarts=4), splicer=RouteSplicer(),
     )
     return graph, traffic, heuristic, service
 
@@ -54,7 +47,7 @@ graph, traffic, heuristic, service = load_services()
 
 # =================== Sidebar ===================
 st.sidebar.title("⚙️ Configuración")
-algorithm = st.sidebar.selectbox("Algoritmo base (tramos)", [Algorithm.ASTAR.value, Algorithm.DIJKSTRA.value], index=0)
+algorithm = st.sidebar.selectbox("Algoritmo base (tramos)", [Algorithm.ASTAR.value, Algorithm.DIJKSTRA.value, Algorithm.BFS.value], index=0)
 mode = st.sidebar.selectbox("Modo de ruta", [RouteMode.VISIT_ALL_OPEN.value, RouteMode.VISIT_ALL_CIRCUIT.value, RouteMode.FIXED_ORDER.value], index=0)
 hour = st.sidebar.slider("Hora del día", 0, 23, 8)
 color_by = st.sidebar.radio("Color de calles", ["class", "traffic"], index=0, horizontal=True)
@@ -69,29 +62,21 @@ with st.sidebar.expander("Heurística (v95 por hora)"):
             st.success("Heurística actualizada.")
 
 # =================== Helpers de visualización ===================
-def _rotate_point(lon: float, lat: float, angle_deg: float, center_lon: float, center_lat: float) -> Tuple[float, float]:
-    if angle_deg == 0: return lon, lat
-    theta = math.radians(angle_deg)
-    dx = lon - center_lon; dy = lat - center_lat
-    rx = dx * math.cos(theta) - dy * math.sin(theta)
-    ry = dx * math.sin(theta) + dy * math.cos(theta)
-    return center_lon + rx, center_lat + ry
-
 def edges_geo_layers(graph: Graph, *, hour: int, color_by: str = "class"):
     road_data = []
-    factor = traffic.factor if hasattr(traffic, "factor") else {}
+    factor = getattr(traffic, "factor", {})
     for u, e in graph.iter_edges():
         n1, n2 = graph.get_node(u), graph.get_node(e.to)
         width = 6 if e.road_class.value == "primary" else (4 if e.road_class.value == "collector" else 2.5)
         base_color = COLOR_ROAD_PRIMARY if e.road_class.value == "primary" else (COLOR_ROAD_COLLECTOR if e.road_class.value == "collector" else COLOR_ROAD_RES)
         if color_by == "traffic":
             f = factor.get(hour, {}).get(e.road_class, 1.0)
-            red = min(255, int(100 + (f - 1.0) * 240)); col = [red, base_color[1], base_color[2], 160]
+            red = min(255, int(100 + (f - 1.0) * 240))
+            col = [red, base_color[1], base_color[2], 160]
         else:
             col = [*base_color, 160]
         road_data.append({"path": [[n1.lon, n1.lat], [n2.lon, n2.lat]], "width": width, "color": col})
-    roads = pdk.Layer("PathLayer", data=road_data, get_path="path", get_width="width", get_color="color", width_min_pixels=2, pickable=False)
-    return roads
+    return pdk.Layer("PathLayer", data=road_data, get_path="path", get_width="width", get_color="color", width_min_pixels=2, pickable=False)
 
 def route_layers(route_legs: List[RouteLeg], graph: Graph):
     if not route_legs: return None, None
@@ -112,7 +97,7 @@ def route_layers(route_legs: List[RouteLeg], graph: Graph):
 
 # =================== POIs ===================
 @st.cache_data(show_spinner=False)
-def make_pois(_graph: Graph, *, version_key: str) -> Dict[str, int]:
+def make_pois(_graph: Graph) -> Dict[str, int]:
     rnd = random.Random(99)
     nodes = list(_graph.iter_nodes())
     center = nodes[len(nodes)//2]
@@ -125,14 +110,9 @@ def make_pois(_graph: Graph, *, version_key: str) -> Dict[str, int]:
 
 # =================== Encabezado ===================
 st.title("🏘️ Pueblito: Rutas Inteligentes")
-st.caption("A* / Dijkstra + heurística admisible, batching par-a-par y TSP (Held-Karp / NN + 2-opt)")
+st.caption("A* / Dijkstra / BFS · batching par-a-par y TSP (Held-Karp / NN + 2-opt)")
 
-nodes_list = list(graph.iter_nodes())
-edges_count = sum(1 for _ in graph.iter_edges())
-_lat_sig = sum(n.lat for n in nodes_list)/len(nodes_list)
-_lon_sig = sum(n.lon for n in nodes_list)/len(nodes_list)
-_sig = f"jm-hardcoded-{len(nodes_list)}-{edges_count}-{round(_lat_sig,6)}-{round(_lon_sig,6)}"
-POIS = make_pois(graph, version_key=_sig)
+POIS = make_pois(graph)
 
 st.sidebar.markdown("---")
 origin_label = st.sidebar.selectbox("Origen (POI)", list(POIS.keys()), index=0)

@@ -168,18 +168,8 @@ origin_label = st.sidebar.selectbox("Origen (POI)", list(POIS.keys()), index=0)
 origin_id = POIS[origin_label]
 choices = [k for k in POIS.keys() if POIS[k] != origin_id]
 selected_labels = st.sidebar.multiselect("Destinos (POIs)", choices, default=choices[:3])
-default_ids = [POIS[l] for l in selected_labels]
-
-with st.sidebar.expander("O ingresar IDs manuales"):
-    src_id = st.number_input("Origen (id)", min_value=0, value=int(origin_id), step=1)
-    dst_ids_str = st.text_input("Destinos (ids separados por coma)", value=",".join(str(i) for i in default_ids))
-    try:
-        manual_ids = [int(x.strip()) for x in dst_ids_str.split(",") if x.strip()]
-    except Exception:
-        manual_ids = default_ids
-use_manual = st.sidebar.checkbox("Usar IDs manuales", value=False)
-origin = int(src_id) if use_manual else int(origin_id)
-destinations = manual_ids if use_manual else [POIS[l] for l in selected_labels]
+origin = int(origin_id)
+destinations = [POIS[l] for l in selected_labels]
 
 st.sidebar.markdown("---")
 calc = st.sidebar.button("🧭 Calcular mejor ruta", use_container_width=True)
@@ -187,22 +177,12 @@ clear = st.sidebar.button("🧹 Limpiar destinos", use_container_width=True)
 if clear:
     destinations = []
 
-# =================== Cámara y capas ===================
-with st.sidebar.expander("Mapa / Cámara", expanded=False):
-    center_mode = st.radio("Centrar mapa en:", ("Centro de ciudad", "Origen seleccionado"), index=0)
-    pitch = st.slider("Inclinación (pitch)", 0, 60, 0)
-    zoom = st.slider("Zoom", 8.0, 18.0, 14.3)
-
+# =================== Cámara y capas (sin controles en UI) ===================
 nodes = list(graph.iter_nodes())
-if center_mode == "Origen seleccionado":
-    try:
-        n0 = graph.get_node(origin)
-        lat_c, lon_c = n0.lat, n0.lon
-    except Exception:
-        lat_c, lon_c = LAT_JM, LON_JM
-else:
-    lat_c = sum(n.lat for n in nodes)/len(nodes)
-    lon_c = sum(n.lon for n in nodes)/len(nodes)
+lat_c = sum(n.lat for n in nodes)/len(nodes)
+lon_c = sum(n.lon for n in nodes)/len(nodes)
+pitch = 0
+zoom = 14.3
 
 roads_layer = build_road_layer(graph, hour=hour, color_by=color_by)
 

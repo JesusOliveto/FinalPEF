@@ -767,6 +767,9 @@ class RoutingService:
                 order_idx = self.solver_exact.solve(waypoints, time_matrix, mode=request.mode); alg = f"{request.algorithm.value} + Held-Karp"
             else:
                 order_idx = self.solver_heur.solve(waypoints, time_matrix, mode=request.mode); alg = f"{request.algorithm.value} + NN/2opt"
+        # En modo circuito, añadimos el regreso al origen para que sea visible en el mapa y en métricas
+        if request.mode == RouteMode.VISIT_ALL_CIRCUIT and order_idx and order_idx[-1] != order_idx[0]:
+            order_idx = order_idx + [order_idx[0]]
         legs = self.splicer.splice(waypoints, order_idx, path_map, self.graph, time_matrix)
         total_s = sum(l.seconds for l in legs)
         total_m = sum(l.distance_m for l in legs)

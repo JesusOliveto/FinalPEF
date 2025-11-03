@@ -33,6 +33,11 @@ LON_JM = -64.0947
 # =================== Motor (cache) ===================
 @st.cache_resource(show_spinner=False)
 def load_services():
+    """Inicializa y cachea el motor de ruteo y sus servicios.
+
+    Returns:
+        Tupla con (graph, traffic, heuristic, service) lista para usar en la UI.
+    """
     graph = Graph.build_jesus_maria_hardcoded()
     traffic = HistoricalTrafficModel()
     heuristic = HybridConservativeHeuristic(LearnedHistoricalHeuristic(), GeoLowerBoundHeuristic())
@@ -62,50 +67,97 @@ with st.sidebar.expander("Heurística (v95 por hora)"):
             st.success("Heurística actualizada.")
 
 # =================== Helpers de visualización ===================
-def edges_geo_layers(graph: Graph, *, hour: int, color_by: str = "class"):
-    road_data = []
-    factor = getattr(traffic, "factor", {})
-    for u, e in graph.iter_edges():
-        n1, n2 = graph.get_node(u), graph.get_node(e.to)
-        width = 6 if e.road_class.value == "primary" else (4 if e.road_class.value == "collector" else 2.5)
-        base_color = COLOR_ROAD_PRIMARY if e.road_class.value == "primary" else (COLOR_ROAD_COLLECTOR if e.road_class.value == "collector" else COLOR_ROAD_RES)
-        if color_by == "traffic":
-            f = factor.get(hour, {}).get(e.road_class, 1.0)
-            red = min(255, int(100 + (f - 1.0) * 240))
-            col = [red, base_color[1], base_color[2], 160]
-        else:
-            col = [*base_color, 160]
-        road_data.append({"path": [[n1.lon, n1.lat], [n2.lon, n2.lat]], "width": width, "color": col})
-    return pdk.Layer("PathLayer", data=road_data, get_path="path", get_width="width", get_color="color", width_min_pixels=2, pickable=False)
+def build_road_layer(graph: Graph, *, hour: int, color_by: str = "class"):
+    """Construye la capa de calles (PathLayer) para pydeck.
 
-def route_layers(route_legs: List[RouteLeg], graph: Graph):
-    if not route_legs: return None, None
-    path_coords, markers = [], []
-    n0 = graph.get_node(route_legs[0].src)
-    markers.append({"lon": n0.lon, "lat": n0.lat, "kind": "Origen"})
+    Args:
+        graph: Grafo de la ciudad.
+        hour: Hora del día usada para colorear por tráfico si corresponde.
+        color_by: "class" para colorear por clase vial, "traffic" para congestión.
+
+    Returns:
+        Capa de pydeck con todos los segmentos viales.
+    """
+    road_data = []
+    traffic_factor_by_hour = getattr(traffic, "factor", {})
+    for from_node_id, edge in graph.iter_edges():
+        node_from = graph.get_node(from_node_id)
+        node_to = graph.get_node(edge.to)
+        path_width_px = 6 if edge.road_class.value == "primary" else (4 if edge.road_class.value == "collector" else 2.5)
+        base_color = (
+            COLOR_ROAD_PRIMARY if edge.road_class.value == "primary" else (
+                COLOR_ROAD_COLLECTOR if edge.road_class.value == "collector" else COLOR_ROAD_RES
+            )
+        )
+        if color_by == "traffic":
+            congestion_factor = traffic_factor_by_hour.get(hour, {}).get(edge.road_class, 1.0)
+            red_channel = min(255, int(100 + (congestion_factor - 1.0) * 240))
+            color_rgba = [red_channel, base_color[1], base_color[2], 160]
+        else:
+            color_rgba = [*base_color, 160]
+        road_data.append({
+            "path": [[node_from.lon, node_from.lat], [node_to.lon, node_to.lat]],
+            "width": path_width_px,
+            "color": color_rgba,
+        })
+    return pdk.Layer(
+        "PathLayer", data=road_data, get_path="path", get_width="width", get_color="color", width_min_pixels=2, pickable=False
+    )
+
+def build_route_layers(route_legs: List[RouteLeg], graph: Graph):
+    """Construye las capas de ruta (PathLayer) y marcadores (ScatterplotLayer).
+
+    Args:
+        route_legs: Tramos de la ruta calculada por el motor.
+        graph: Grafo para traducir ids a coordenadas lon/lat.
+
+    Returns:
+        Tupla (layer_path, layer_points). Si no hay ruta, devuelve (None, None).
+    """
+    if not route_legs:
+        return None, None
+    path_coords: List[Dict[str, List[List[float]]]] = []
+    marker_points: List[Dict[str, float]] = []
+    origin_node = graph.get_node(route_legs[0].src)
+    marker_points.append({"lon": origin_node.lon, "lat": origin_node.lat, "kind": "Origen"})
     for leg in route_legs:
-        coords = []
-        for nid in leg.path:
-            nn = graph.get_node(nid)
-            coords.append([nn.lon, nn.lat])
-        path_coords.append({"path": coords})
-        dnode = graph.get_node(leg.dst)
-        markers.append({"lon": dnode.lon, "lat": dnode.lat, "kind": "Destino"})
-    lay_path = pdk.Layer("PathLayer", data=path_coords, get_path="path", get_width=7, get_color=COLOR_ROUTE, width_min_pixels=3)
-    lay_points = pdk.Layer("ScatterplotLayer", data=markers, get_position="[lon, lat]", get_radius=30, get_fill_color=[20, 200, 120], pickable=True)
-    return lay_path, lay_points
+        leg_coords: List[List[float]] = []
+        for node_id in leg.path:
+            current_node = graph.get_node(node_id)
+            leg_coords.append([current_node.lon, current_node.lat])
+        path_coords.append({"path": leg_coords})
+        destination_node = graph.get_node(leg.dst)
+        marker_points.append({"lon": destination_node.lon, "lat": destination_node.lat, "kind": "Destino"})
+    layer_path = pdk.Layer(
+        "PathLayer", data=path_coords, get_path="path", get_width=7, get_color=COLOR_ROUTE, width_min_pixels=3
+    )
+    layer_points = pdk.Layer(
+        "ScatterplotLayer", data=marker_points, get_position="[lon, lat]", get_radius=30, get_fill_color=[20, 200, 120], pickable=True
+    )
+    return layer_path, layer_points
 
 # =================== POIs ===================
 @st.cache_data(show_spinner=False)
 def make_pois(_graph: Graph) -> Dict[str, int]:
+    """Genera un conjunto pequeño de POIs de ejemplo mapeados a ids de nodos.
+
+    Args:
+        _graph: Grafo desde el cual se seleccionarán nodos representativos.
+
+    Returns:
+        Diccionario {nombre_POI -> id_nodo}.
+    """
     rnd = random.Random(99)
     nodes = list(_graph.iter_nodes())
-    center = nodes[len(nodes)//2]
-    picks = rnd.sample(nodes, k=min(40, len(nodes)))
-    labels = ["Plaza Central","Escuela #1","Mercado","Centro Cívico","Club Social","Comisaría","Capilla","Biblioteca","Terminal","Hospital"]
-    pois: Dict[str, int] = {labels[0]: center.id}
-    for i, n in enumerate(picks[:len(labels)-1], start=1):
-        pois[labels[i]] = n.id
+    center_node = nodes[len(nodes)//2]
+    sampled_nodes = rnd.sample(nodes, k=min(40, len(nodes)))
+    labels = [
+        "Plaza Central","Escuela #1","Mercado","Centro Cívico","Club Social",
+        "Comisaría","Capilla","Biblioteca","Terminal","Hospital"
+    ]
+    pois: Dict[str, int] = {labels[0]: center_node.id}
+    for idx, node in enumerate(sampled_nodes[:len(labels)-1], start=1):
+        pois[labels[idx]] = node.id
     return pois
 
 # =================== Encabezado ===================
@@ -155,7 +207,7 @@ else:
     lat_c = sum(n.lat for n in nodes)/len(nodes)
     lon_c = sum(n.lon for n in nodes)/len(nodes)
 
-roads_layer = edges_geo_layers(graph, hour=hour, color_by=color_by)
+roads_layer = build_road_layer(graph, hour=hour, color_by=color_by)
 
 route_leg_list: List[RouteLeg] = []
 result_summary = None
@@ -165,7 +217,7 @@ if calc and destinations:
     route_leg_list = res.legs
     result_summary = res
 
-route_layer, points_layer = route_layers(route_leg_list, graph)
+route_layer, points_layer = build_route_layers(route_leg_list, graph)
 
 layers = [roads_layer]
 if route_layer: layers.append(route_layer)

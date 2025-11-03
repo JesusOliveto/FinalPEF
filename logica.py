@@ -115,11 +115,15 @@ class Graph:
     # ---- Jesús María hardcodeado (mantiene tu configuración manual)
     @staticmethod
     def build_jesus_maria_hardcoded() -> "Graph":
-        """
-        Red vial estilizada que imita Jesús María:
+        """Construye una red vial estilizada que imita Jesús María.
+
+        Características:
         - 3 parches de grilla (centro rotado ~-23°, sudeste cardinal, noroeste chico rotado)
         - Diagonal primaria SW→NE (RN-9 aprox.) con enlaces
-        - Políticas de mano única / doble mano por clase
+        - Políticas de mano única / doble mano por clase de vía
+
+        Returns:
+            Grafo dirigido con nodos (lon/lat) y aristas con clases viales/velocidades.
         """
         g = Graph()
 
@@ -129,9 +133,11 @@ class Graph:
         Ky = 111000.0                        # m/° lat
 
         def to_lonlat(x_m: float, y_m: float) -> Tuple[float, float]:
+            """Convierte coordenadas en metros relativos (x,y) a (lon, lat) grados."""
             return (LON0 + x_m / Kx, LAT0 + y_m / Ky)
 
         def rot_xy(dx: float, dy: float, deg: float) -> Tuple[float, float]:
+            """Rota un vector (dx,dy) grados alrededor del origen (convención antihoraria)."""
             if deg == 0.0:
                 return dx, dy
             th = radians(deg)
@@ -156,6 +162,10 @@ class Graph:
             collector_mod: int,
             start_id: int
         ) -> Tuple[List[List[int]], List[int], int]:
+            """Agrega un parche de grilla al grafo con rotación y clases viales.
+
+            Devuelve la matriz de ids, la lista de ids de borde y el próximo id disponible.
+            """
             cx, cy = center_xy_m
             ids = [[-1] * nx for _ in range(ny)]
             next_id = start_id
@@ -175,16 +185,19 @@ class Graph:
             v_res, v_col, v_pri = 35.0, 45.0, 65.0
 
             def class_h(row: int) -> RoadClass:
+                """Clase vial para horizontales según la fila."""
                 if row % primary_mod == 0: return RoadClass.PRIMARY
                 if row % collector_mod == 0: return RoadClass.COLLECTOR
                 return RoadClass.RESIDENTIAL
 
             def class_v(col: int) -> RoadClass:
+                """Clase vial para verticales según la columna."""
                 if col % primary_mod == 0: return RoadClass.PRIMARY
                 if col % collector_mod == 0: return RoadClass.COLLECTOR
                 return RoadClass.RESIDENTIAL
 
             def add_one_way(u: int, v: int, dist: float, rc: RoadClass, sp: float, *, is_horizontal: bool, r: int, c: int):
+                """Agrega una arista de un sentido con patrón alternado por fila/columna."""
                 if is_horizontal:
                     if (r % 2) == 0: g.add_edge(u, v, dist, rc, sp, one_way=True)
                     else:            g.add_edge(v, u, dist, rc, sp, one_way=True)
@@ -197,20 +210,20 @@ class Graph:
                     u = ids[r][c]
                     if c + 1 < nx:
                         v = ids[r][c + 1]
-                        n1, n2 = g.get_node(u), g.get_node(v)
-                        dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
-                        rc = class_h(r)
-                        sp = v_pri if rc == RoadClass.PRIMARY else (v_col if rc == RoadClass.COLLECTOR else v_res)
-                        if BIDIR[rc]: g.add_bidirectional(u, v, dist, rc, sp)
-                        else:         add_one_way(u, v, dist, rc, sp, is_horizontal=True, r=r, c=c)
+                        node_a, node_b = g.get_node(u), g.get_node(v)
+                        distance_m = haversine_km(node_a.lat, node_a.lon, node_b.lat, node_b.lon) * 1000.0
+                        road_class = class_h(r)
+                        speed_kmh = v_pri if road_class == RoadClass.PRIMARY else (v_col if road_class == RoadClass.COLLECTOR else v_res)
+                        if BIDIR[road_class]: g.add_bidirectional(u, v, distance_m, road_class, speed_kmh)
+                        else:                  add_one_way(u, v, distance_m, road_class, speed_kmh, is_horizontal=True, r=r, c=c)
                     if r + 1 < ny:
                         v = ids[r + 1][c]
-                        n1, n2 = g.get_node(u), g.get_node(v)
-                        dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
-                        rc = class_v(c)
-                        sp = v_pri if rc == RoadClass.PRIMARY else (v_col if rc == RoadClass.COLLECTOR else v_res)
-                        if BIDIR[rc]: g.add_bidirectional(u, v, dist, rc, sp)
-                        else:         add_one_way(u, v, dist, rc, sp, is_horizontal=False, r=r, c=c)
+                        node_a, node_b = g.get_node(u), g.get_node(v)
+                        distance_m = haversine_km(node_a.lat, node_a.lon, node_b.lat, node_b.lon) * 1000.0
+                        road_class = class_v(c)
+                        speed_kmh = v_pri if road_class == RoadClass.PRIMARY else (v_col if road_class == RoadClass.COLLECTOR else v_res)
+                        if BIDIR[road_class]: g.add_bidirectional(u, v, distance_m, road_class, speed_kmh)
+                        else:                  add_one_way(u, v, distance_m, road_class, speed_kmh, is_horizontal=False, r=r, c=c)
 
             border: List[int] = []
             for r in range(ny):
@@ -220,14 +233,15 @@ class Graph:
             return ids, border, next_id
 
         def connect_nearest(border_a: List[int], border_b: List[int], *, k_pairs: int, max_dist_m: float, road: RoadClass, v_kmh: float):
+            """Conecta pares más cercanos entre dos bordes de parches respetando un máx. de distancia."""
             pairs: List[Tuple[float, int, int]] = []
             for u in border_a:
                 n1 = g.get_node(u)
                 for v in border_b:
                     n2 = g.get_node(v)
-                    d = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
-                    if d <= max_dist_m:
-                        pairs.append((d, u, v))
+                    distance_m = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
+                    if distance_m <= max_dist_m:
+                        pairs.append((distance_m, u, v))
             pairs.sort(key=lambda x: x[0])
             used_a, used_b = set(), set()
             cnt = 0
@@ -266,6 +280,7 @@ class Graph:
 
         # Enlaces RN-9 → parches
         def attach_poly_to_patch(poly_ids: List[int], border: List[int], *, every: int, max_dist_m: float):
+            """Conecta un polígono (RN-9) con un borde de parche cada N nodos si la distancia lo permite."""
             for i, pid in enumerate(poly_ids):
                 if i % every != 0: continue
                 pn = g.get_node(pid)
@@ -296,6 +311,10 @@ class Graph:
 # ==========================================================
 class TrafficModel:
     def travel_time_seconds(self, edge: Edge, *, hour: int) -> Seconds:
+        """Devuelve el tiempo de viaje estimado (en segundos) para recorrer una arista a una hora dada.
+
+        Debe ser implementado por subclases que modelen la congestión o el costo temporal.
+        """
         raise NotImplementedError
 
 
@@ -314,6 +333,7 @@ class HistoricalTrafficModel(TrafficModel):
         return base
 
     def travel_time_seconds(self, edge: Edge, *, hour: int) -> Seconds:
+        """Calcula el tiempo de viaje ajustado por un factor de congestión según hora y clase vial."""
         factor = self.factor.get(hour, {}).get(edge.road_class, 1.1)
         hours = edge.distance_m / 1000.0 / max(edge.freeflow_kmh, 1e-6)
         return hours * 3600.0 * factor
@@ -324,6 +344,11 @@ class HistoricalTrafficModel(TrafficModel):
 # ==========================================================
 class Heuristic:
     def estimate(self, graph: Graph, node_id: NodeId, goal_id: NodeId, *, hour: int) -> Seconds:
+        """Estimación (lower bound) del tiempo de viaje restante desde un nodo al objetivo.
+
+        Las implementaciones pueden usar distancia geográfica, límites de velocidad,
+        o modelos aprendidos condicionados por la hora del día.
+        """
         raise NotImplementedError
 
 

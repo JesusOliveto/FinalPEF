@@ -53,10 +53,10 @@ def load_services(driver_max_kmh: float = 40.0):
 st.sidebar.title("⚙️ Configuración")
 algorithm = st.sidebar.selectbox("Algoritmo base (tramos)", [Algorithm.ASTAR.value, Algorithm.DIJKSTRA.value, Algorithm.BFS.value], index=0)
 mode = st.sidebar.selectbox("Modo de ruta", [RouteMode.VISIT_ALL_OPEN.value, RouteMode.VISIT_ALL_CIRCUIT.value, RouteMode.FIXED_ORDER.value], index=0)
-hour = st.sidebar.slider("Hora del día", 0, 23, 8)
 color_by = st.sidebar.radio("Color de calles", ["class", "traffic"], index=0, horizontal=True)
 
 with st.sidebar.expander("Tráfico y vehículo", expanded=False):
+    hour = st.slider("Hora del día", 0, 23, 8)
     driver_speed = st.slider("Velocidad del conductor (km/h)", min_value=20, max_value=80, value=40, step=5)
 
 # Inicialización del motor con la velocidad elegida

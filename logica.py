@@ -360,47 +360,7 @@ class HistoricalTrafficModel(TrafficModel):
 # ==========================================================
 # Heurísticas
 # ==========================================================
-class Heuristic:
-    def estimate(self, graph: Graph, node_id: NodeId, goal_id: NodeId, *, hour: int) -> Seconds:
-        """Estimación (lower bound) del tiempo de viaje restante desde un nodo al objetivo.
-
-        Las implementaciones pueden usar distancia geográfica, límites de velocidad,
-        o modelos aprendidos condicionados por la hora del día.
-        """
-        raise NotImplementedError
-
-
-class GeoLowerBoundHeuristic(Heuristic):
-    def __init__(self, vmax_kmh: KmPerHour = 65.0) -> None:
-        self.vmax_kmh = vmax_kmh
-
-    def estimate(self, graph: Graph, node_id: NodeId, goal_id: NodeId, *, hour: int) -> Seconds:
-        n, g2 = graph.get_node(node_id), graph.get_node(goal_id)
-        dist_km = haversine_km(n.lat, n.lon, g2.lat, g2.lon)
-        return (dist_km / max(self.vmax_kmh, 1e-6)) * 3600.0
-
-
-class LearnedHistoricalHeuristic(Heuristic):
-    def __init__(self, vmax95_by_hour: Optional[Dict[int, KmPerHour]] = None) -> None:
-        self.v95 = vmax95_by_hour or {h: 65.0 for h in range(24)}
-
-    def estimate(self, graph: Graph, node_id: NodeId, goal_id: NodeId, *, hour: int) -> Seconds:
-        n, g2 = graph.get_node(node_id), graph.get_node(goal_id)
-        dist_km = haversine_km(n.lat, n.lon, g2.lat, g2.lon)
-        vmax = max(self.v95.get(hour, 60.0), 1e-6)
-        return (dist_km / vmax) * 3600.0
-
-
-class HybridConservativeHeuristic(Heuristic):
-    def __init__(self, learned: LearnedHistoricalHeuristic, geo: GeoLowerBoundHeuristic) -> None:
-        self.learned = learned
-        self.geo = geo
-
-    def estimate(self, graph: Graph, node_id: NodeId, goal_id: NodeId, *, hour: int) -> Seconds:
-        return min(
-            self.learned.estimate(graph, node_id, goal_id, hour=hour),
-            self.geo.estimate(graph, node_id, goal_id, hour=hour),
-        )
+## Heurísticas eliminadas del API público. A* usará una cota inferior simple inline.
 
 
 # ==========================================================
@@ -464,7 +424,7 @@ def _reconstruct(parent: Dict[NodeId, Optional[NodeId]], src: NodeId, dst: NodeI
 
 
 class DijkstraRouter:
-    def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int, traffic: TrafficModel, heuristic: Optional[Heuristic] = None) -> Tuple[RouteLeg, SearchStats]:
+    def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int, traffic: TrafficModel) -> Tuple[RouteLeg, SearchStats]:
         import heapq
         dist: Dict[NodeId, float] = defaultdict(lambda: float("inf"))
         parent: Dict[NodeId, Optional[NodeId]] = {src: None}
@@ -492,19 +452,21 @@ class DijkstraRouter:
 
 
 class AStarRouter:
-    def __init__(self, default_heuristic: Optional[Heuristic] = None) -> None:
-        self.default_heuristic = default_heuristic
+    def __init__(self, vmax_kmh_for_h: KmPerHour = 50.0) -> None:
+        """A* con heurística inline: tiempo geo optimista usando vmax_kmh_for_h."""
+        self.vmax_h = max(1e-6, float(vmax_kmh_for_h))
 
-    def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int, traffic: TrafficModel, heuristic: Optional[Heuristic] = None) -> Tuple[RouteLeg, SearchStats]:
+    def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int, traffic: TrafficModel) -> Tuple[RouteLeg, SearchStats]:
         import heapq
-        h = heuristic or self.default_heuristic or GeoLowerBoundHeuristic()
         g_score: Dict[NodeId, float] = defaultdict(lambda: float("inf"))
         f_score: Dict[NodeId, float] = defaultdict(lambda: float("inf"))
         parent: Dict[NodeId, Optional[NodeId]] = {src: None}
         stats = SearchStats()
 
         def est(nid: NodeId) -> float:
-            return h.estimate(graph, nid, dst, hour=hour)
+            n, g2 = graph.get_node(nid), graph.get_node(dst)
+            dist_km = haversine_km(n.lat, n.lon, g2.lat, g2.lon)
+            return (dist_km / self.vmax_h) * 3600.0
 
         g_score[src] = 0.0
         f_score[src] = est(src)
@@ -533,7 +495,7 @@ class AStarRouter:
 
 class BFSRouter:
     """BFS para grafos no ponderados (o ponderar todo como 1). Útil como baseline/depuración."""
-    def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int, traffic: TrafficModel, heuristic: Optional[Heuristic] = None) -> Tuple[RouteLeg, SearchStats]:
+    def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int, traffic: TrafficModel) -> Tuple[RouteLeg, SearchStats]:
         from collections import deque
         q = deque([src])
         parent: Dict[NodeId, Optional[NodeId]] = {src: None}
@@ -622,68 +584,41 @@ class PairwiseDistanceService:
         hour: int,
         algorithm: Algorithm,
         traffic: TrafficModel,
-        heuristic: Heuristic,
     ) -> Tuple[List[List[Seconds]], Dict[Tuple[int, int], List[NodeId]]]:
         n = len(waypoints)
         time_matrix: List[List[Seconds]] = [[float("inf")] * n for _ in range(n)]
         path_map: Dict[Tuple[int, int], List[NodeId]] = {}
 
-        # 1) SSSP memoizado (Dijkstra from-one) en paralelo
-        def solve_from(i: int) -> Tuple[int, Dict[NodeId, Seconds], Dict[NodeId, Optional[NodeId]]]:
-            src = waypoints[i]
-            key = ("SSSP", src, hour, "dijkstra")
-            cached = self.ssp_memo.get(key)
+        def route_pair(i: int, j: int) -> Tuple[int, int, Seconds, List[NodeId], RouteLeg]:
+            if i == j:
+                return i, j, 0.0, [waypoints[i]], RouteLeg(waypoints[i], waypoints[j], [waypoints[i]], 0.0, 0.0, 0)
+            src, dst = waypoints[i], waypoints[j]
+            cache_key = ("LEG", src, dst, hour, algorithm.value)
+            cached = self.route_cache.get(cache_key)
             if cached:
-                dm, pm = cached
-                return i, dict(dm), dict(pm)
+                return i, j, cached.seconds, cached.path, cached
+            # seleccionar router
+            if algorithm == Algorithm.ASTAR:
+                leg, _ = self.router_astar.route(graph, src, dst, hour=hour, traffic=traffic)
+            elif algorithm == Algorithm.DIJKSTRA:
+                leg, _ = self.router_dijkstra.route(graph, src, dst, hour=hour, traffic=traffic)
+            else:
+                # BFS directo
+                bfs = BFSRouter()
+                leg, _ = bfs.route(graph, src, dst, hour=hour, traffic=traffic)
+            self.route_cache.set(cache_key, leg)
+            return i, j, leg.seconds, leg.path, leg
 
-            import heapq
-            dist: Dict[NodeId, float] = defaultdict(lambda: float("inf"))
-            parent: Dict[NodeId, Optional[NodeId]] = {src: None}
-            dist[src] = 0.0
-            pq: List[Tuple[float, NodeId]] = [(0.0, src)]
-            while pq:
-                d, u = heapq.heappop(pq)
-                if d > dist[u]:
-                    continue
-                for e in graph.neighbors(u):
-                    alt = d + traffic.travel_time_seconds(e, hour=hour)
-                    if alt < dist[e.to]:
-                        dist[e.to] = alt
-                        parent[e.to] = u
-                        heapq.heappush(pq, (alt, e.to))
-
-            self.ssp_memo.set(key, dist, parent)
-            return i, dist, parent
-
-        results: Dict[int, Tuple[Dict[NodeId, Seconds], Dict[NodeId, Optional[NodeId]]]] = {}
+        # Ejecutar en paralelo todos los pares
+        tasks = []
         with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
-            for fut in as_completed([ex.submit(solve_from, i) for i in range(n)]):
-                i, dist, parent = fut.result()
-                results[i] = (dist, parent)
-
-        # 2) Construcción de matriz + uso explícito de RouteCache (tramo a tramo)
-        for i in range(n):
-            dist, parent = results[i]
-            for j in range(n):
-                if i == j:
-                    time_matrix[i][j] = 0.0
-                    path_map[(i, j)] = [waypoints[i]]
-                    continue
-                src, dst = waypoints[i], waypoints[j]
-                cache_key = ("LEG", src, dst, hour, algorithm.value)
-                cached_leg = self.route_cache.get(cache_key)
-                if cached_leg:
-                    time_matrix[i][j] = cached_leg.seconds
-                    path_map[(i, j)] = cached_leg.path
-                else:
-                    seconds = float(dist.get(dst, float("inf")))
-                    path = _reconstruct(parent, src, dst)
-                    time_matrix[i][j] = seconds
-                    path_map[(i, j)] = path
-                    # almacenamos el leg
-                    leg = RouteLeg(src, dst, path, seconds, _path_distance_m(graph, path), 0)
-                    self.route_cache.set(cache_key, leg)
+            for i in range(n):
+                for j in range(n):
+                    tasks.append(ex.submit(route_pair, i, j))
+            for fut in as_completed(tasks):
+                i, j, seconds, path, _leg = fut.result()
+                time_matrix[i][j] = seconds
+                path_map[(i, j)] = path
         return time_matrix, path_map
 
 
@@ -799,16 +734,15 @@ class RouteSplicer:
 # Servicio de ruteo
 # ==========================================================
 class RoutingService:
-    def __init__(self, graph: Graph, traffic: TrafficModel, heuristic: Heuristic, pairwise_service: PairwiseDistanceService, solver_exact: MultiStopSolver, solver_heur: MultiStopSolver, splicer: RouteSplicer) -> None:
+    def __init__(self, graph: Graph, traffic: TrafficModel, pairwise_service: PairwiseDistanceService, solver_exact: MultiStopSolver, solver_heur: MultiStopSolver, splicer: RouteSplicer) -> None:
         self.graph = graph
         self.traffic = traffic
-        self.heuristic = heuristic
         self.pairwise = pairwise_service
         self.solver_exact = solver_exact
         self.solver_heur = solver_heur
         self.splicer = splicer
         self.router_dijkstra = DijkstraRouter()
-        self.router_astar = AStarRouter(default_heuristic=heuristic)
+        self.router_astar = AStarRouter()
         self.router_bfs = BFSRouter()
 
     def route_single(self, src: NodeId, dst: NodeId, *, hour: int, algorithm: Algorithm = Algorithm.ASTAR) -> RouteLeg:
@@ -817,13 +751,13 @@ class RoutingService:
         elif algorithm == Algorithm.BFS:
             leg, _ = self.router_bfs.route(self.graph, src, dst, hour=hour, traffic=self.traffic)
         else:
-            leg, _ = self.router_astar.route(self.graph, src, dst, hour=hour, traffic=self.traffic, heuristic=self.heuristic)
+            leg, _ = self.router_astar.route(self.graph, src, dst, hour=hour, traffic=self.traffic)
         return leg
 
     def route(self, request: RouteRequest) -> RouteResult:
         waypoints = [request.origin] + list(request.destinations)
         time_matrix, path_map = self.pairwise.compute_matrix(
-            self.graph, waypoints, hour=request.hour, algorithm=request.algorithm, traffic=self.traffic, heuristic=self.heuristic
+            self.graph, waypoints, hour=request.hour, algorithm=request.algorithm, traffic=self.traffic
         )
         n = len(waypoints)
         if request.mode == RouteMode.FIXED_ORDER:
@@ -886,9 +820,8 @@ class TestJM(unittest.TestCase):
     def test_routing_multi(self):
         g = Graph.build_jesus_maria_hardcoded()
         t = HistoricalTrafficModel()
-        h = HybridConservativeHeuristic(LearnedHistoricalHeuristic(), GeoLowerBoundHeuristic())
-        pair = PairwiseDistanceService(AStarRouter(h), DijkstraRouter(), RouteCache(), SSSPMemo())
-        svc = RoutingService(g, t, h, pair, HeldKarpExact(), HeuristicRoute(), RouteSplicer())
+        pair = PairwiseDistanceService(AStarRouter(), DijkstraRouter(), RouteCache(), SSSPMemo())
+        svc = RoutingService(g, t, pair, HeldKarpExact(), HeuristicRoute(), RouteSplicer())
         nodes = list(g.iter_nodes())
         req = RouteRequest(origin=nodes[0].id, destinations=[nodes[5].id, nodes[20].id, nodes[-1].id], hour=8, mode=RouteMode.VISIT_ALL_OPEN, algorithm=Algorithm.ASTAR)
         res = svc.route(req)
@@ -899,9 +832,8 @@ if __name__ == "__main__":
     # Smoke test rápido
     g = Graph.build_jesus_maria_hardcoded()
     t = HistoricalTrafficModel()
-    h = HybridConservativeHeuristic(LearnedHistoricalHeuristic(), GeoLowerBoundHeuristic())
-    pair = PairwiseDistanceService(AStarRouter(h), DijkstraRouter(), RouteCache(), SSSPMemo())
-    svc = RoutingService(g, t, h, pair, HeldKarpExact(), HeuristicRoute(), RouteSplicer())
+    pair = PairwiseDistanceService(AStarRouter(), DijkstraRouter(), RouteCache(), SSSPMemo())
+    svc = RoutingService(g, t, pair, HeldKarpExact(), HeuristicRoute(), RouteSplicer())
     nodes = list(g.iter_nodes())
     src, dst = nodes[0].id, nodes[-1].id
     leg = svc.route_single(src, dst, hour=8)

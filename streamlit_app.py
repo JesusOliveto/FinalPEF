@@ -14,7 +14,6 @@ import pydeck as pdk
 
 from logica import (
     Algorithm, Graph, HistoricalTrafficModel,
-    GeoLowerBoundHeuristic, LearnedHistoricalHeuristic, HybridConservativeHeuristic,
     AStarRouter, DijkstraRouter, PairwiseDistanceService,
     RouteCache, SSSPMemo, HeldKarpExact, HeuristicRoute, RouteSplicer,
     RouteLeg, RouteMode, RouteRequest, RoutingService
@@ -39,17 +38,16 @@ def load_services(driver_max_kmh: float = 40.0):
         driver_max_kmh: Velocidad máxima del conductor (km/h) para limitar tiempos.
 
     Returns:
-        Tupla con (graph, traffic, heuristic, service) lista para usar en la UI.
+        Tupla con (graph, traffic, service) lista para usar en la UI.
     """
     graph = Graph.build_jesus_maria_hardcoded()
     traffic = HistoricalTrafficModel(driver_max_kmh=driver_max_kmh)
-    heuristic = HybridConservativeHeuristic(LearnedHistoricalHeuristic(), GeoLowerBoundHeuristic())
-    pairwise = PairwiseDistanceService(AStarRouter(heuristic), DijkstraRouter(), RouteCache(), SSSPMemo(), max_workers=4)
+    pairwise = PairwiseDistanceService(AStarRouter(driver_max_kmh), DijkstraRouter(), RouteCache(), SSSPMemo(), max_workers=4)
     service = RoutingService(
-        graph=graph, traffic=traffic, heuristic=heuristic, pairwise_service=pairwise,
+        graph=graph, traffic=traffic, pairwise_service=pairwise,
         solver_exact=HeldKarpExact(), solver_heur=HeuristicRoute(restarts=4), splicer=RouteSplicer(),
     )
-    return graph, traffic, heuristic, service
+    return graph, traffic, service
 
 # =================== Sidebar ===================
 st.sidebar.title("⚙️ Configuración")
@@ -62,16 +60,8 @@ with st.sidebar.expander("Tráfico y vehículo", expanded=False):
     driver_speed = st.slider("Velocidad del conductor (km/h)", min_value=20, max_value=80, value=40, step=5)
 
 # Inicialización del motor con la velocidad elegida
-graph, traffic, heuristic, service = load_services(driver_speed)
-
-with st.sidebar.expander("Heurística (v95 por hora)"):
-    st.caption("Subí un JSON {hora:int → vmax95_kmh:float} para A*.")
-    vmax_file = st.file_uploader("v95.json", type=["json"], accept_multiple_files=False)
-    if vmax_file:
-        vmax = json.load(vmax_file)
-        if isinstance(heuristic, HybridConservativeHeuristic):
-            heuristic.learned.v95 = {int(k): float(v) for k, v in vmax.items()}
-            st.success("Heurística actualizada.")
+graph, traffic, service = load_services(driver_speed)
+ 
 
 # =================== Helpers de visualización ===================
 def build_road_layer(graph: Graph, *, hour: int, color_by: str = "class"):

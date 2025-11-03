@@ -319,8 +319,20 @@ class TrafficModel:
 
 
 class HistoricalTrafficModel(TrafficModel):
-    def __init__(self, factor_by_hour_and_class: Optional[Dict[int, Dict[RoadClass, float]]] = None) -> None:
+    def __init__(
+        self,
+        factor_by_hour_and_class: Optional[Dict[int, Dict[RoadClass, float]]] = None,
+        *,
+        driver_max_kmh: float = 40.0,
+    ) -> None:
+        """Modelo de tráfico histórico con límite de velocidad del vehículo.
+
+        Args:
+            factor_by_hour_and_class: Mapa {hora -> {clase_vial -> factor_congestión}}.
+            driver_max_kmh: Velocidad máxima realista del conductor (km/h). Por defecto 40.
+        """
         self.factor = factor_by_hour_and_class or self._default()
+        self.driver_max_kmh = max(1.0, float(driver_max_kmh))
 
     @staticmethod
     def _default() -> Dict[int, Dict[RoadClass, float]]:
@@ -333,9 +345,15 @@ class HistoricalTrafficModel(TrafficModel):
         return base
 
     def travel_time_seconds(self, edge: Edge, *, hour: int) -> Seconds:
-        """Calcula el tiempo de viaje ajustado por un factor de congestión según hora y clase vial."""
+        """Calcula el tiempo de viaje ajustado por congestión y límite del conductor.
+
+        Se toma la velocidad efectiva como el mínimo entre la velocidad libre de la arista
+        y la velocidad máxima del conductor (p.ej., 40 km/h), y luego se multiplica por
+        el factor de congestión correspondiente a la hora y clase vial.
+        """
         factor = self.factor.get(hour, {}).get(edge.road_class, 1.1)
-        hours = edge.distance_m / 1000.0 / max(edge.freeflow_kmh, 1e-6)
+        effective_kmh = max(min(edge.freeflow_kmh, self.driver_max_kmh), 1e-6)
+        hours = edge.distance_m / 1000.0 / effective_kmh
         return hours * 3600.0 * factor
 
 

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-streamlit_app.py — UI para “Pueblito: Rutas Inteligentes”
+streamlit_app.py — UI para "Jesús María: Rutas Inteligentes”
 Foco: calcular mejores rutas en Jesús María (sin OSM).
 """
 from __future__ import annotations
@@ -159,8 +159,8 @@ def make_pois(_graph: Graph) -> Dict[str, int]:
     return pois
 
 # =================== Encabezado ===================
-st.title("🏘️ Pueblito: Rutas Inteligentes")
-st.caption("A* / Dijkstra / BFS · batching par-a-par y TSP (Held-Karp / NN + 2-opt)")
+st.title("🏘️ Jesús María: Rutas Inteligentes")
+st.caption("A* / Dijkstra / BFS")
 
 POIS = make_pois(graph)
 

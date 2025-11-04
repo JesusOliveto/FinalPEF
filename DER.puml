@@ -41,6 +41,7 @@ entity RouteLeg {
 
 entity RouteResult {
   visit_order : List<int>
+  legs : List<RouteLeg>
   total_seconds : float
   total_distance_m : float
   algorithm_summary : str

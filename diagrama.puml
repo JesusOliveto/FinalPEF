@@ -4,26 +4,19 @@ actor UI as User
 participant "streamlit_app.py" as UIApp
 participant "RoutingService" as RS
 participant "PairwiseDistanceService" as PDS
-participant "Router (A*/Dijkstra)" as RTR
-participant "PairwiseMatrixCache" as PMC
-participant "SSSPMemo/RouteCache" as CACH
+participant "Router (A*/Dijkstra/BFS)" as RTR
+participant "RouteCache" as CACH
 participant "MultiStopSolver\n(HeldKarpExact/HeuristicRoute)" as SOLV
 participant "RouteSplicer" as SPL
 
 User -> UIApp: set origin + destinos + hour + modo
 UIApp -> RS: route(request: RouteRequest)
 
-RS -> PMC: get(signature)
-alt matriz cache hit
-  PMC --> RS: (time_matrix, path_map)
-else cache miss
-  RS -> PDS: compute_matrix(graph, waypoints, hour, alg, traffic, heuristic)
-  PDS -> CACH: check SSSP/Route cache
-  PDS -> RTR: route(...) por pares (batch + concurrencia)
-  RTR --> PDS: RouteLeg + SearchStats (por par)
-  PDS -> PMC: set(signature, time_matrix, path_map)
-  PDS --> RS: (time_matrix, path_map)
-end
+RS -> PDS: compute_matrix(graph, waypoints, hour, alg, traffic)
+PDS -> CACH: get/set por tramo (route cache)
+PDS -> RTR: route(...) por pares (batch + concurrencia)
+RTR --> PDS: RouteLeg + SearchStats (por par)
+PDS --> RS: (time_matrix, path_map)
 
 RS -> SOLV: solve(waypoints, time_matrix, mode)
 SOLV --> RS: visit_order_idx

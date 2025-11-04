@@ -14,29 +14,23 @@ entity Router {  -- interfaz/estrategia pairwise --
 }
 entity AStarRouter
 entity DijkstraRouter
+entity BFSRouter
 
 entity TrafficModel
 entity HistoricalTrafficModel
 
-entity Heuristic
-entity GeoLowerBoundHeuristic
-entity LearnedHistoricalHeuristic
-entity HybridConservativeHeuristic
 
 entity MultiStopSolver
 entity HeldKarpExact
 entity HeuristicRoute
 
 entity RouteCache
-entity SSSPMemo
-entity PairwiseMatrixCache
 
 entity Graph
 
 ' ==== Relaciones (cardinalidades de uso/composición) ====
 RoutingService ||--|| Graph : usa
 RoutingService ||--|| TrafficModel : usa
-RoutingService ||--|| Heuristic : usa
 RoutingService ||--|| PairwiseDistanceService : coordina
 RoutingService ||--|| MultiStopSolver : solver_exact
 RoutingService ||--|| MultiStopSolver : solver_heur
@@ -45,22 +39,23 @@ RoutingService ||--|| Profiler : perf
 
 PairwiseDistanceService ||--|| AStarRouter : usa
 PairwiseDistanceService ||--|| DijkstraRouter : usa
+PairwiseDistanceService ||--|| BFSRouter : usa
 PairwiseDistanceService ||--o{ ConcurrencyExecutor : paraleliza
 PairwiseDistanceService ||--|| RouteCache : cache_rutas
-PairwiseDistanceService ||--|| SSSPMemo : memo_sssp
-PairwiseDistanceService ||--|| PairwiseMatrixCache : cache_matriz
 
-AStarRouter ||--|| Heuristic : requiere
+AStarRouter ||--|| Router : implementa
 AStarRouter ||--|| TrafficModel : requiere
 AStarRouter ||--|| Graph : consulta
 
+DijkstraRouter ||--|| Router : implementa
 DijkstraRouter ||--|| TrafficModel : requiere
 DijkstraRouter ||--|| Graph : consulta
 
+BFSRouter ||--|| Router : implementa
+BFSRouter ||--|| TrafficModel : requiere
+BFSRouter ||--|| Graph : consulta
+
 HistoricalTrafficModel ||--|| TrafficModel : implementa
-GeoLowerBoundHeuristic ||--|| Heuristic : implementa
-LearnedHistoricalHeuristic ||--|| Heuristic : implementa
-HybridConservativeHeuristic ||--|| Heuristic : implementa
 
 HeldKarpExact ||--|| MultiStopSolver : implementa
 HeuristicRoute ||--|| MultiStopSolver : implementa

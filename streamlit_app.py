@@ -150,8 +150,8 @@ def make_pois(_graph: Graph) -> Dict[str, int]:
     center_node = nodes[len(nodes)//2]
     sampled_nodes = rnd.sample(nodes, k=min(40, len(nodes)))
     labels = [
-        "Plaza Central","Escuela #1","Mercado","Centro Cívico","Club Social",
-        "Comisaría","Capilla","Biblioteca","Terminal","Hospital"
+        "Plaza","Escuela Pío León","Supermercado","Municipalidad","Club Social",
+        "Comisaría","Capilla","Biblioteca","Terminal","Clínica Municipal"
     ]
     pois: Dict[str, int] = {labels[0]: center_node.id}
     for idx, node in enumerate(sampled_nodes[:len(labels)-1], start=1):
@@ -173,8 +173,8 @@ origin = int(origin_id)
 destinations = [POIS[l] for l in selected_labels]
 
 st.sidebar.markdown("---")
-calc = st.sidebar.button("🧭 Calcular mejor ruta", use_container_width=True)
-clear = st.sidebar.button("🧹 Limpiar destinos", use_container_width=True)
+calc = st.sidebar.button("Calcular mejor ruta", use_container_width=True)
+clear = st.sidebar.button("Limpiar destinos", use_container_width=True)
 if clear:
     destinations = []
 

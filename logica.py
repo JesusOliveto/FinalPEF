@@ -533,7 +533,7 @@ class LRUCache:
             self._store.popitem(last=False)
 
 
-# (Eliminado) SSSPMemo: no se utiliza en la versión actual del cálculo par-a-par.
+
 
 
 class RouteCache:

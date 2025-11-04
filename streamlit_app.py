@@ -15,7 +15,8 @@ from logica import (
     Algorithm, Graph, HistoricalTrafficModel,
     AStarRouter, DijkstraRouter, PairwiseDistanceService,
     RouteCache, HeldKarpExact, HeuristicRoute, RouteSplicer,
-    RouteLeg, RouteMode, RouteRequest, RoutingService
+    RouteLeg, RouteMode, RouteRequest, RoutingService,
+    route_with_gemini,
 )
 
 # =================== UI config ===================
@@ -52,6 +53,7 @@ def load_services(driver_max_kmh: float = 40.0):
 st.sidebar.title("⚙️ Configuración")
 algorithm = st.sidebar.selectbox("Algoritmo base (tramos)", [Algorithm.ASTAR.value, Algorithm.DIJKSTRA.value, Algorithm.BFS.value], index=0)
 mode = st.sidebar.selectbox("Modo de ruta", [RouteMode.VISIT_ALL_OPEN.value, RouteMode.VISIT_ALL_CIRCUIT.value, RouteMode.FIXED_ORDER.value], index=0)
+use_gemini = st.sidebar.checkbox("Orden óptimo con Gemini (IA)", value=False)
 color_by = st.sidebar.radio("Color de calles", ["class", "traffic"], index=0, horizontal=True)
 
 with st.sidebar.expander("Tráfico y vehículo", expanded=False):
@@ -188,10 +190,25 @@ roads_layer = build_road_layer(graph, hour=hour, color_by=color_by)
 route_leg_list: List[RouteLeg] = []
 result_summary = None
 if calc and destinations:
-    req = RouteRequest(origin=int(origin), destinations=[int(x) for x in destinations], hour=int(hour), mode=RouteMode(mode), algorithm=Algorithm(algorithm))
-    res = service.route(req)
+    req = RouteRequest(
+        origin=int(origin),
+        destinations=[int(x) for x in destinations],
+        hour=int(hour),
+        mode=RouteMode(mode),
+        algorithm=Algorithm(algorithm),
+    )
+    if use_gemini:
+        try:
+            res = route_with_gemini(service, req, api_key=st.secrets["api_key"], model="gemini-2.5-flash")
+        except Exception as e:
+            st.warning(f"Gemini falló ({e}). Se usa el solver local.")
+            res = service.route(req)
+    else:
+        res = service.route(req)
+
     route_leg_list = res.legs
     result_summary = res
+
 
 route_layer, points_layer = build_route_layers(route_leg_list, graph)
 

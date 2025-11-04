@@ -757,6 +757,139 @@ class RoutingService:
         return RouteResult(visit_order, legs, total_s, total_m, alg)
 
 
+# =================== Integración Gemini (orden de visita vía IA) ===================
+def route_with_gemini(
+    service: "RoutingService",
+    request: "RouteRequest",
+    *,
+    api_key: str,
+    model: str = "gemini-2.5-flash",
+    temperature: float = 0.1,
+) -> "RouteResult":
+    """
+    Usa Gemini para decidir el orden de visita (TSP) a partir de la matriz de tiempos calculada
+    por el motor local (A*, Dijkstra o BFS). Luego ensambla los tramos con tus rutas óptimas.
+
+    - Mantiene tus caminos/tiempos por tramo (no inventa trayectos).
+    - Devuelve un RouteResult idéntico al flujo normal.
+    """
+    import json, re
+
+    # 1) Calculamos matriz de tiempos y los paths óptimos par-a-par con tu servicio
+    waypoints = [request.origin] + list(request.destinations)
+    time_matrix, path_map = service.pairwise.compute_matrix(
+        service.graph,
+        waypoints,
+        hour=request.hour,
+        algorithm=request.algorithm,
+        traffic=service.traffic,
+    )
+    n = len(waypoints)
+
+    # Mapeo índice->node_id solo a efectos de trazabilidad en la explicación
+    idx_to_node = {i: int(waypoints[i]) for i in range(n)}
+
+    # 2) Armamos instrucciones estrictas para obtener SOLO JSON con el orden
+    #    (Gemini decide orden minimizando suma de tiempos de la matriz)
+    mode = request.mode.value
+    circuit = (request.mode == RouteMode.VISIT_ALL_CIRCUIT)
+    constraints = (
+        f"- Usar índices 0..{n-1}\n"
+        f"- Debe comenzar en 0 (origen)\n"
+        + ("- Debe terminar nuevamente en 0 (circuito)\n" if circuit else "- No repetir 0 al final (camino abierto)\n")
+        + "- Incluir cada índice exactamente una vez (excepto repetir 0 si es circuito)\n"
+    )
+
+    sys_instr = (
+        "You are a routing optimizer. "
+        "Given a non-negative time matrix (seconds) for traveling between waypoint indices, "
+        "return ONLY a strict JSON object with the visiting order that minimizes total time "
+        "under the constraints. Do not include code fences or extra keys."
+    )
+
+    prompt = (
+        "TASK: Choose the visiting order that minimizes total travel time.\n"
+        f"MODE: {mode}\n"
+        f"ALGORITHM_FOR_LEGS: {request.algorithm.value} (precomputed)\n"
+        "CONSTRAINTS:\n"
+        f"{constraints}\n"
+        "INPUT:\n"
+        f" - waypoints_index_to_node_id = {json.dumps(idx_to_node, ensure_ascii=False)}\n"
+        f" - time_matrix_seconds = {json.dumps(time_matrix)}\n\n"
+        "Return ONLY this JSON schema (no markdown, no explanations outside JSON):\n"
+        "{\n"
+        '  "order_idx": [int, ...],\n'
+        '  "reasoning": "one brief sentence"\n'
+        "}"
+    )
+
+    # 3) Llamamos a Gemini (import lazy para no romper entornos sin la lib)
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+        resp = client.models.generate_content(
+            model=model,
+            config=types.GenerateContentConfig(
+                temperature=temperature,
+                system_instruction=sys_instr,
+            ),
+            contents=prompt,
+        )
+
+        raw = getattr(resp, "text", None) or getattr(resp, "output_text", None) or ""
+        # Limpieza por si viniera envuelto en ```json ... ```
+        raw = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", raw.strip())
+        data = json.loads(raw)
+        order_idx = list(map(int, data.get("order_idx", [])))
+    except Exception as e:
+        # Fallback: usa tu solver local si Gemini falla
+        # (mantiene robustness y no rompe el flujo)
+        if n <= 13:
+            order_idx = service.solver_exact.solve(waypoints, time_matrix, mode=request.mode)
+            alg_sum = f"{request.algorithm.value} + Held-Karp (fallback)"
+        else:
+            order_idx = service.solver_heur.solve(waypoints, time_matrix, mode=request.mode)
+            alg_sum = f"{request.algorithm.value} + NN/2opt (fallback)"
+    else:
+        # 4) Validaciones suaves de contrato
+        def valid_order(idx):
+            return (
+                isinstance(idx, list)
+                and all(isinstance(x, int) and 0 <= x < n for x in idx)
+                and (idx[0] == 0)
+                and (len(set(idx[1:])) == (n - 1))  # todos los demás únicos
+                and ((idx[-1] == 0) if circuit else (idx[-1] != 0))
+                and (len(idx) == (n + (1 if circuit else 0)))
+            )
+
+        if not valid_order(order_idx):
+            # Si Gemini devolvió algo raro, aplicamos fallback local
+            if n <= 13:
+                order_idx = service.solver_exact.solve(waypoints, time_matrix, mode=request.mode)
+                alg_sum = f"{request.algorithm.value} + Held-Karp (fallback-bad-json)"
+            else:
+                order_idx = service.solver_heur.solve(waypoints, time_matrix, mode=request.mode)
+                alg_sum = f"{request.algorithm.value} + NN/2opt (fallback-bad-json)"
+        else:
+            alg_sum = f"gemini/{model} + {request.algorithm.value} (tramos)"
+
+    # 5) Ensamblamos con tus tramos óptimos ya calculados
+    legs = service.splicer.splice(waypoints, order_idx, path_map, service.graph, time_matrix)
+    total_s = sum(l.seconds for l in legs)
+    total_m = sum(l.distance_m for l in legs)
+    visit_order = [waypoints[i] for i in order_idx]
+
+    return RouteResult(
+        visit_order=visit_order,
+        legs=legs,
+        total_seconds=total_s,
+        total_distance_m=total_m,
+        algorithm_summary=alg_sum,
+    )
+
+
 # ==========================================================
 # Helpers geo / profiling
 # ==========================================================

@@ -533,15 +533,7 @@ class LRUCache:
             self._store.popitem(last=False)
 
 
-class SSSPMemo:
-    def __init__(self) -> None:
-        self._store: Dict[Tuple[Any, ...], Tuple[Dict[NodeId, Seconds], Dict[NodeId, Optional[NodeId]]]] = {}
-
-    def get(self, key: Tuple[Any, ...]) -> Optional[Tuple[Mapping[NodeId, Seconds], Mapping[NodeId, Optional[NodeId]]]]:
-        return self._store.get(key)
-
-    def set(self, key: Tuple[Any, ...], dist: Mapping[NodeId, Seconds], parent: Mapping[NodeId, Optional[NodeId]]) -> None:
-        self._store[key] = (dict(dist), dict(parent))
+# (Eliminado) SSSPMemo: no se utiliza en la versión actual del cálculo par-a-par.
 
 
 class RouteCache:
@@ -555,23 +547,13 @@ class RouteCache:
         self._lru.set(key, leg)
 
 
-class PairwiseMatrixCache:
-    def __init__(self) -> None:
-        self._store: Dict[Tuple[Any, ...], Tuple[List[List[Seconds]], Dict[Tuple[int, int], List[NodeId]]]] = {}
-
-    def get(self, signature: Tuple[Any, ...]) -> Optional[Tuple[List[List[Seconds]], Dict[Tuple[int, int], List[NodeId]]]]:
-        return self._store.get(signature)
-
-    def set(self, signature: Tuple[Any, ...], time_matrix: List[List[Seconds]], path_map: Dict[Tuple[int, int], List[NodeId]]) -> None:
-        self._store[signature] = (time_matrix, path_map)
 
 
 class PairwiseDistanceService:
-    def __init__(self, router_astar: AStarRouter, router_dijkstra: DijkstraRouter, route_cache: RouteCache, ssp_memo: SSSPMemo, *, max_workers: int = 4) -> None:
+    def __init__(self, router_astar: AStarRouter, router_dijkstra: DijkstraRouter, route_cache: RouteCache, *, max_workers: int = 4) -> None:
         self.router_astar = router_astar
         self.router_dijkstra = router_dijkstra
         self.route_cache = route_cache
-        self.ssp_memo = ssp_memo
         self.max_workers = max_workers
 
     def compute_matrix(
@@ -821,7 +803,7 @@ class TestJM(unittest.TestCase):
     def test_routing_multi(self):
         g = Graph.build_jesus_maria_hardcoded()
         t = HistoricalTrafficModel()
-        pair = PairwiseDistanceService(AStarRouter(), DijkstraRouter(), RouteCache(), SSSPMemo())
+        pair = PairwiseDistanceService(AStarRouter(), DijkstraRouter(), RouteCache())
         svc = RoutingService(g, t, pair, HeldKarpExact(), HeuristicRoute(), RouteSplicer())
         nodes = list(g.iter_nodes())
         req = RouteRequest(origin=nodes[0].id, destinations=[nodes[5].id, nodes[20].id, nodes[-1].id], hour=8, mode=RouteMode.VISIT_ALL_OPEN, algorithm=Algorithm.ASTAR)
@@ -833,7 +815,7 @@ if __name__ == "__main__":
     # Smoke test rápido
     g = Graph.build_jesus_maria_hardcoded()
     t = HistoricalTrafficModel()
-    pair = PairwiseDistanceService(AStarRouter(), DijkstraRouter(), RouteCache(), SSSPMemo())
+    pair = PairwiseDistanceService(AStarRouter(), DijkstraRouter(), RouteCache())
     svc = RoutingService(g, t, pair, HeldKarpExact(), HeuristicRoute(), RouteSplicer())
     nodes = list(g.iter_nodes())
     src, dst = nodes[0].id, nodes[-1].id

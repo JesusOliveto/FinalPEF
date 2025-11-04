@@ -14,7 +14,7 @@ import pydeck as pdk
 from logica import (
     Algorithm, Graph, HistoricalTrafficModel,
     AStarRouter, DijkstraRouter, PairwiseDistanceService,
-    RouteCache, SSSPMemo, HeldKarpExact, HeuristicRoute, RouteSplicer,
+    RouteCache, HeldKarpExact, HeuristicRoute, RouteSplicer,
     RouteLeg, RouteMode, RouteRequest, RoutingService
 )
 
@@ -41,7 +41,7 @@ def load_services(driver_max_kmh: float = 40.0):
     """
     graph = Graph.build_jesus_maria_hardcoded()
     traffic = HistoricalTrafficModel(driver_max_kmh=driver_max_kmh)
-    pairwise = PairwiseDistanceService(AStarRouter(driver_max_kmh), DijkstraRouter(), RouteCache(), SSSPMemo(), max_workers=4)
+    pairwise = PairwiseDistanceService(AStarRouter(driver_max_kmh), DijkstraRouter(), RouteCache(), max_workers=4)
     service = RoutingService(
         graph=graph, traffic=traffic, pairwise_service=pairwise,
         solver_exact=HeldKarpExact(), solver_heur=HeuristicRoute(restarts=4), splicer=RouteSplicer(),

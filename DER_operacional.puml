@@ -10,8 +10,10 @@ entity RouteSplicer
 entity ConcurrencyExecutor
 entity Profiler
 
-entity Router {  -- interfaz/estrategia pairwise --
-}
+entity Router
+note right of Router
+	interfaz/estrategia pairwise
+end note
 entity AStarRouter
 entity DijkstraRouter
 entity BFSRouter

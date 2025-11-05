@@ -17,10 +17,13 @@ from typing import Dict, List, Tuple, Iterable, Iterator, Optional, Any, Callabl
 from collections import defaultdict, OrderedDict
 from math import radians, sin, cos, asin, sqrt
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import argparse
+import sys
 import unittest
 import cProfile
 import pstats
 import io
+import time
 
 
 # ==========================================================
@@ -1352,6 +1355,44 @@ def run_profiled(fn: Callable, *args, **kwargs) -> str:
     return s.getvalue()
 
 
+def profile_call(fn: Callable, *args, **kwargs) -> Tuple[Any, str]:
+    """Ejecuta una función con cProfile y devuelve (resultado, reporte pstats).
+
+    Args:
+        fn: función a ejecutar.
+        *args, **kwargs: argumentos para la función.
+    Returns:
+        tuple[result, str]: resultado de la función y resumen de pstats
+        (top 20 por cumtime).
+    """
+    pr = cProfile.Profile()
+    pr.enable()
+    result = fn(*args, **kwargs)
+    pr.disable()
+    s = io.StringIO()
+    pstats.Stats(pr, stream=s).sort_stats("cumtime").print_stats(20)
+    return result, s.getvalue()
+
+
+class ProfileTimer:
+    """Context manager para medir tiempo con perf_counter.
+
+    Uso:
+        with ProfileTimer() as t:
+            ...
+        print(t.elapsed)
+    """
+
+    def __enter__(self):
+        self._t0 = time.perf_counter()
+        self.elapsed = 0.0
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.elapsed = time.perf_counter() - self._t0
+        return False
+
+
 # ==========================================================
 # Tests mínimos
 # ==========================================================
@@ -1385,24 +1426,151 @@ class TestJM(unittest.TestCase):
         self.assertGreater(len(res.legs), 0)
 
 
-if __name__ == "__main__":
-    # Smoke test rápido
+class TestEngine(unittest.TestCase):
+    def setUp(self):
+        self.graph = Graph.build_jesus_maria_hardcoded()
+        self.traffic = HistoricalTrafficModel()
+        self.nodes = list(self.graph.iter_nodes())
+
+    def test_dijkstra_astar_same_cost(self):
+        src, dst = self.nodes[0].id, self.nodes[-1].id
+        d_leg, _ = DijkstraRouter().route(
+            self.graph, src, dst, hour=8, traffic=self.traffic
+        )
+        a_leg, _ = AStarRouter().route(
+            self.graph, src, dst, hour=8, traffic=self.traffic
+        )
+        self.assertTrue(d_leg.path and a_leg.path)
+        self.assertAlmostEqual(d_leg.seconds, a_leg.seconds, places=6)
+
+    def test_bfs_route_valid(self):
+        src, dst = self.nodes[0].id, self.nodes[len(self.nodes) // 2].id
+        b_leg, _ = BFSRouter().route(
+            self.graph, src, dst, hour=8, traffic=self.traffic
+        )
+        self.assertTrue(b_leg.path)
+        self.assertTrue(b_leg.seconds > 0)
+
+    def test_pairwise_matrix_shapes(self):
+        wps = [self.nodes[i].id for i in [0, 3, 5, 8]]
+        pair = PairwiseDistanceService(
+            AStarRouter(), DijkstraRouter(), RouteCache(), max_workers=2
+        )
+        m, pm = pair.compute_matrix(
+            self.graph,
+            wps,
+            hour=8,
+            algorithm=Algorithm.DIJKSTRA,
+            traffic=self.traffic,
+        )
+        n = len(wps)
+        self.assertEqual(len(m), n)
+        self.assertEqual(len(m[0]), n)
+        for i in range(n):
+            self.assertEqual(m[i][i], 0.0)
+            for j in range(n):
+                self.assertIn((i, j), pm)
+
+    def test_circuit_adds_return_leg(self):
+        pair = PairwiseDistanceService(AStarRouter(), DijkstraRouter(), RouteCache())
+        svc = RoutingService(
+            self.graph, self.traffic, pair, HeldKarpExact(), HeuristicRoute(), RouteSplicer()
+        )
+        wps = [self.nodes[i].id for i in [0, 3, 5, 8]]
+        req = RouteRequest(
+            origin=wps[0],
+            destinations=wps[1:],
+            hour=8,
+            mode=RouteMode.VISIT_ALL_CIRCUIT,
+            algorithm=Algorithm.ASTAR,
+        )
+        res = svc.route(req)
+        self.assertGreaterEqual(len(res.legs), 2)
+        self.assertEqual(res.visit_order[0], res.visit_order[-1])
+
+    def test_run_profiled_and_profile_call(self):
+        def _tiny():
+            sum(i * i for i in range(1000))
+
+        report = run_profiled(_tiny)
+        self.assertIsInstance(report, str)
+        self.assertGreater(len(report), 0)
+
+        (result, rep2) = profile_call(lambda x: x + 1, 41)
+        self.assertEqual(result, 42)
+        self.assertIsInstance(rep2, str)
+        self.assertGreater(len(rep2), 0)
+
+    def test_dijkstra_memoization(self):
+        router = DijkstraRouter()
+        src, dst, hour = self.nodes[0].id, self.nodes[-1].id, 8
+        out1 = router.route(self.graph, src, dst, hour=hour, traffic=self.traffic)
+        memo_key = (id(self.graph), id(self.traffic), src, dst, hour)
+        self.assertIn(memo_key, router._memo)
+        out2 = router.route(self.graph, src, dst, hour=hour, traffic=self.traffic)
+        self.assertIs(out1, out2)
+
+
+def _build_service(driver_max_kmh: float = 40.0) -> Tuple[Graph, HistoricalTrafficModel, RoutingService]:
+    """Helper para construir el servicio de ruteo listo para usar."""
     g = Graph.build_jesus_maria_hardcoded()
-    t = HistoricalTrafficModel()
-    pair = PairwiseDistanceService(
-        AStarRouter(), DijkstraRouter(), RouteCache())
-    svc = RoutingService(
-        g,
-        t,
-        pair,
-        HeldKarpExact(),
-        HeuristicRoute(),
-        RouteSplicer())
+    t = HistoricalTrafficModel(driver_max_kmh=driver_max_kmh)
+    pair = PairwiseDistanceService(AStarRouter(driver_max_kmh), DijkstraRouter(), RouteCache())
+    svc = RoutingService(g, t, pair, HeldKarpExact(), HeuristicRoute(), RouteSplicer())
+    return g, t, svc
+
+
+def _cmd_smoke(hour: int = 8, driver_max_kmh: float = 40.0) -> None:
+    g, _t, svc = _build_service(driver_max_kmh)
     nodes = list(g.iter_nodes())
     src, dst = nodes[0].id, nodes[-1].id
-    leg = svc.route_single(src, dst, hour=8)
-    print(
-        f"Smoke: {src}→{dst}: {
-            leg.seconds:.1f}s · {
-            leg.distance_m /
-            1000:.2f} km")
+    leg = svc.route_single(src, dst, hour=hour)
+    print(f"Smoke: {src}→{dst}: {leg.seconds:.1f}s · {leg.distance_m/1000:.2f} km")
+
+
+def _cmd_tests(verbosity: int = 1) -> None:
+    # Ejecuta los tests definidos en este módulo
+    argv = [sys.argv[0]]
+    unittest.main(module=__name__, argv=argv, exit=False, verbosity=verbosity)
+
+
+def _cmd_profile(algo: str, mode: str, hour: int, n: int, driver_max_kmh: float) -> None:
+    g, t, svc = _build_service(driver_max_kmh)
+    nodes = list(g.iter_nodes())
+    n = max(2, min(n, len(nodes)))
+    waypoints = [nodes[i].id for i in range(n)]
+    req = RouteRequest(
+        origin=waypoints[0],
+        destinations=waypoints[1:],
+        hour=hour,
+        mode=RouteMode(mode),
+        algorithm=Algorithm(algo),
+    )
+    (res, report) = profile_call(svc.route, req)
+    print("=== Profiling resultado ===")
+    print(f"Total: {res.total_seconds:.1f}s · {res.total_distance_m/1000:.2f} km · algoritmo: {res.algorithm_summary}")
+    print("\n=== pstats (top 20 por cumtime) ===")
+    print(report)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Motor de ruteo · utilidades CLI")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--smoke", action="store_true", help="Ejecuta el smoke test (un tramo)")
+    group.add_argument("--tests", action="store_true", help="Ejecuta los tests unitarios embebidos")
+    group.add_argument("--profile", action="store_true", help="Perfilado de una ruta multi-destino")
+
+    parser.add_argument("--hour", type=int, default=8, help="Hora del día (0..23)")
+    parser.add_argument("--driver-max-kmh", type=float, default=40.0, help="Velocidad máxima del conductor (km/h)")
+    parser.add_argument("--algo", choices=[a.value for a in Algorithm], default=Algorithm.ASTAR.value, help="Algoritmo base (para --profile)")
+    parser.add_argument("--mode", choices=[m.value for m in RouteMode], default=RouteMode.VISIT_ALL_OPEN.value, help="Modo de ruta (para --profile)")
+    parser.add_argument("--n", type=int, default=4, help="Cantidad de waypoints (para --profile)")
+    parser.add_argument("--verbosity", type=int, default=1, help="Verbosity de tests (para --tests)")
+
+    args = parser.parse_args()
+    if args.smoke:
+        _cmd_smoke(hour=args.hour, driver_max_kmh=args.driver_max_kmh)
+    elif args.tests:
+        _cmd_tests(verbosity=args.verbosity)
+    elif args.profile:
+        _cmd_profile(args.algo, args.mode, args.hour, args.n, args.driver_max_kmh)

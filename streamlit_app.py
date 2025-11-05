@@ -313,7 +313,7 @@ with col2:
     st.subheader("📊 Métricas")
     if result_summary:
         st.success(
-            f"Tiempo total estimado: **{result_summary.total_seconds:.1f}s** · "
+            f"Tiempo total estimado: **{result_summary.total_seconds / 60:.1f} min** · "
             f"Distancia: **{result_summary.total_distance_m / 1000:.2f} km** · "
             f"Algoritmo: {result_summary.algorithm_summary}"
         )

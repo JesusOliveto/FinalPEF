@@ -207,6 +207,7 @@ def make_pois(_graph: Graph) -> Dict[str, int]:
     center_node = nodes[len(nodes) // 2]
     sampled_nodes = rnd.sample(nodes, k=min(40, len(nodes)))
     labels = [
+        "Base Central",
         "Plaza",
         "Escuela Pío León",
         "Supermercado",
@@ -228,6 +229,7 @@ st.title("🏘️ Jesús María: Rutas Inteligentes")
 st.caption("A* / Dijkstra / BFS")
 
 POIS = make_pois(graph)
+POI_NAMES: Dict[int, str] = {node_id: label for label, node_id in POIS.items()}
 
 st.sidebar.markdown("---")
 origin_label = st.sidebar.selectbox("Origen (POI)", list(POIS.keys()), index=0)
@@ -305,9 +307,9 @@ st.pydeck_chart(
 col1, col2 = st.columns([1, 1])
 with col1:
     st.subheader("📍 Selección")
-    st.write(f"**Origen:** #{origin}")
+    st.write(f"**Origen:** {origin_label}")
     st.write("**Destinos:** " +
-             (", ".join(f"#{d}" for d in destinations) if destinations else "—"))
+             (", ".join(selected_labels) if selected_labels else "—"))
 
 with col2:
     st.subheader("📊 Métricas")
@@ -319,10 +321,12 @@ with col2:
         )
         with st.expander("Detalle de tramos"):
             for i, leg in enumerate(route_leg_list, 1):
+                src_name = POI_NAMES.get(leg.src, f"#{leg.src}")
+                dst_name = POI_NAMES.get(leg.dst, f"#{leg.dst}")
                 st.write(
-                    f"{i}. #{
-                        leg.src} → #{
-                        leg.dst} · {
+                    f"{i}. {
+                        src_name} → {
+                        dst_name} · {
                         leg.seconds:.1f}s · {
                         leg.distance_m /
                         1000:.3f} km")

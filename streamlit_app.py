@@ -35,10 +35,16 @@ def load_services(driver_max_kmh: float = 40.0):
     """Inicializa y cachea el motor de ruteo y sus servicios.
 
     Args:
-        driver_max_kmh: Velocidad máxima del conductor (km/h) para limitar tiempos.
+        driver_max_kmh: Velocidad máxima del conductor (km/h) con la que se limita
+            el cálculo de tiempos en el `HistoricalTrafficModel` y se configura la
+            heurística de A* (vmax para el estimador).
 
     Returns:
-        Tupla con (graph, traffic, service) lista para usar en la UI.
+        tuple[Graph, HistoricalTrafficModel, RoutingService]:
+            - Graph: grafo vial hardcodeado de Jesús María.
+            - HistoricalTrafficModel: modelo de tráfico con congestión y límite del conductor.
+            - RoutingService: servicio de ruteo que usa `PairwiseDistanceService` con
+              `RouteCache` y concurrencia (max_workers).
     """
     graph = Graph.build_jesus_maria_hardcoded()
     traffic = HistoricalTrafficModel(driver_max_kmh=driver_max_kmh)
@@ -71,10 +77,10 @@ def build_road_layer(graph: Graph, *, hour: int, color_by: str = "class"):
     Args:
         graph: Grafo de la ciudad.
         hour: Hora del día usada para colorear por tráfico si corresponde.
-        color_by: "class" para colorear por clase vial, "traffic" para congestión.
+        color_by: "class" para colorear por clase vial; "traffic" para congestión.
 
     Returns:
-        Capa de pydeck con todos los segmentos viales.
+        pdk.Layer: capa de PyDeck con todos los segmentos viales.
     """
     road_data = []
     traffic_factor_by_hour = getattr(traffic, "factor", {})
@@ -110,7 +116,8 @@ def build_route_layers(route_legs: List[RouteLeg], graph: Graph):
         graph: Grafo para traducir ids a coordenadas lon/lat.
 
     Returns:
-        Tupla (layer_path, layer_points). Si no hay ruta, devuelve (None, None).
+        tuple[Optional[pdk.Layer], Optional[pdk.Layer]]: (layer_path, layer_points).
+        Si no hay ruta, devuelve (None, None).
     """
     if not route_legs:
         return None, None
@@ -139,11 +146,13 @@ def build_route_layers(route_legs: List[RouteLeg], graph: Graph):
 def make_pois(_graph: Graph) -> Dict[str, int]:
     """Genera un conjunto pequeño de POIs de ejemplo mapeados a ids de nodos.
 
+    Usa cache de datos para evitar recomputar sobre el mismo grafo.
+
     Args:
         _graph: Grafo desde el cual se seleccionarán nodos representativos.
 
     Returns:
-        Diccionario {nombre_POI -> id_nodo}.
+        Dict[str, int]: diccionario {nombre_POI -> id_nodo}.
     """
     rnd = random.Random(99)
     nodes = list(_graph.iter_nodes())

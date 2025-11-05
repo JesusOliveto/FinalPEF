@@ -26,18 +26,32 @@ import io
 # Tipos y enums
 # ==========================================================
 class Algorithm(str, Enum):
+    """Algoritmo base para el cálculo par-a-par.
+
+    Valores:
+    - ASTAR: A* con heurística geográfica de tiempo optimista.
+    - DIJKSTRA: Búsqueda de costo uniforme sobre tiempos de viaje.
+    - BFS: Búsqueda en anchura (camino no ponderado; tiempos se suman a posteriori).
+    """
     ASTAR = "astar"
     DIJKSTRA = "dijkstra"
     BFS = "bfs"  # útil para grafos no ponderados o depuración
 
 
 class RouteMode(str, Enum):
+    """Modo global de la ruta multi-destino.
+
+    - VISIT_ALL_OPEN: ruta abierta (no vuelve al origen).
+    - VISIT_ALL_CIRCUIT: circuito (vuelve al origen y se muestra explícitamente).
+    - FIXED_ORDER: respeta el orden provisto (no re-optimiza).
+    """
     VISIT_ALL_OPEN = "visit_all_open"
     VISIT_ALL_CIRCUIT = "visit_all_circuit"
     FIXED_ORDER = "fixed_order"
 
 
 class RoadClass(str, Enum):
+    """Clasificación vial de una arista (calle/carretera)."""
     RESIDENTIAL = "residential"
     COLLECTOR = "collector"
     PRIMARY = "primary"
@@ -56,6 +70,12 @@ KmPerHour = float
 # ==========================================================
 @dataclass(frozen=True)
 class Node:
+    """Nodo del grafo (un punto geográfico).
+
+    Atributos:
+    - id: identificador entero único.
+    - lat, lon: coordenadas geográficas en grados.
+    """
     id: NodeId
     lat: float
     lon: float
@@ -63,6 +83,15 @@ class Node:
 
 @dataclass
 class Edge:
+    """Arista dirigida entre nodos con atributos viales.
+
+    Atributos:
+    - to: id de nodo destino.
+    - distance_m: longitud en metros.
+    - road_class: clase vial (afecta congestión/velocidad).
+    - freeflow_kmh: velocidad libre (km/h).
+    - one_way: indica si es de un solo sentido.
+    """
     to: NodeId
     distance_m: Meters
     road_class: RoadClass
@@ -71,12 +100,15 @@ class Edge:
 
 
 class Graph:
+    """Grafo dirigido con nodos georreferenciados y aristas con atributos viales."""
     def __init__(self) -> None:
+        """Crea un grafo vacío con listas de adyacencia."""
         self.nodes: Dict[NodeId, Node] = {}
         self.adj: Dict[NodeId, List[Edge]] = defaultdict(list)
 
     # ---- core
     def add_node(self, node_id: NodeId, lat: float, lon: float) -> None:
+        """Agrega un nodo con id y coordenadas geográficas."""
         self.nodes[node_id] = Node(node_id, lat, lon)
 
     def add_edge(
@@ -88,6 +120,7 @@ class Graph:
         freeflow_kmh: KmPerHour = 40.0,
         one_way: bool = False,
     ) -> None:
+        """Agrega una arista dirigida u→v con atributos viales."""
         self.adj[u].append(Edge(v, distance_m, road_class, freeflow_kmh, one_way))
 
     def add_bidirectional(
@@ -98,19 +131,24 @@ class Graph:
         road_class: RoadClass,
         freeflow_kmh: KmPerHour,
     ) -> None:
+        """Agrega aristas en ambos sentidos entre u y v con los mismos atributos."""
         self.add_edge(u, v, distance_m, road_class, freeflow_kmh)
         self.add_edge(v, u, distance_m, road_class, freeflow_kmh)
 
     def neighbors(self, u: NodeId) -> Iterable[Edge]:
+        """Itera sobre aristas salientes de u (puede estar vacío)."""
         return self.adj.get(u, [])
 
     def get_node(self, node_id: NodeId) -> Node:
+        """Obtiene el nodo por id. Lanza KeyError si no existe."""
         return self.nodes[node_id]
 
     def iter_nodes(self) -> Iterator[Node]:
+        """Itera todos los nodos del grafo (sin orden particular)."""
         yield from self.nodes.values()
 
     def iter_edges(self) -> Iterator[Tuple[NodeId, Edge]]:
+        """Itera todas las aristas (u, e) del grafo (sin orden particular)."""
         for u, lst in self.adj.items():
             for e in lst:
                 yield u, e
@@ -366,6 +404,15 @@ class HistoricalTrafficModel(TrafficModel):
 # ==========================================================
 @dataclass
 class RouteRequest:
+    """Solicitud de ruteo de origen a múltiples destinos.
+
+    Atributos:
+    - origin: id de nodo inicio.
+    - destinations: ids de nodos a visitar en el recorrido.
+    - hour: hora del día (0..23) para el modelo de tráfico.
+    - mode: modo de ruta (abierta, circuito, fijo).
+    - algorithm: algoritmo base para calcular tramos.
+    """
     origin: NodeId
     destinations: List[NodeId]
     hour: int
@@ -375,6 +422,13 @@ class RouteRequest:
 
 @dataclass
 class RouteLeg:
+    """Tramo elemental de una ruta (de src a dst por un path).
+
+    - path: secuencia de nodos desde src a dst (incluye extremos).
+    - seconds: tiempo total estimado (segundos).
+    - distance_m: distancia acumulada (metros).
+    - expanded_nodes: nodos expandidos por el algoritmo de búsqueda (telemetría).
+    """
     src: NodeId
     dst: NodeId
     path: List[NodeId]
@@ -385,6 +439,7 @@ class RouteLeg:
 
 @dataclass
 class RouteResult:
+    """Resultado completo de una ruta multi-destino."""
     visit_order: List[NodeId]
     legs: List[RouteLeg]
     total_seconds: Seconds
@@ -395,6 +450,13 @@ class RouteResult:
 
 
 def iter_path_edges(path: List[NodeId]) -> Iterable[Tuple[NodeId, NodeId]]:
+    """Itera pares consecutivos (u, v) a lo largo del path.
+
+    Args:
+        path: lista de ids de nodos que define un camino.
+    Yields:
+        Tuplas (u, v) para cada segmento del camino.
+    """
     for i in range(len(path) - 1):
         yield path[i], path[i + 1]
 
@@ -403,6 +465,7 @@ def iter_path_edges(path: List[NodeId]) -> Iterable[Tuple[NodeId, NodeId]]:
 # Routers
 # ==========================================================
 class SearchStats:
+    """Estadísticas simples de una búsqueda (telemetría)."""
     def __init__(self) -> None:
         self.expanded_nodes = 0
         self.queue_pushes = 0
@@ -410,6 +473,7 @@ class SearchStats:
 
 
 def _reconstruct(parent: Dict[NodeId, Optional[NodeId]], src: NodeId, dst: NodeId) -> List[NodeId]:
+    """Reconstruye el camino src→dst usando punteros padre; devuelve [] si no hay ruta."""
     cur = dst
     chain = [cur]
     while cur is not None and cur != src:
@@ -433,6 +497,12 @@ def batcher(lista, batch_size: int):
 
 # ====== Dijkstra con batching + threads + memo ======
 class DijkstraRouter:
+    """Dijkstra con batching de vecinos, concurrencia y memoización.
+
+    - Batching: procesa vecinos en lotes para amortizar overhead.
+    - Concurrencia: paraleliza cálculo de costos de aristas dentro de cada lote.
+    - Memoización: cachea resultados (RouteLeg, SearchStats) por clave de parámetros.
+    """
     def __init__(self, *, batch_size: int = 64, max_workers: int = 4) -> None:
         """
         batch_size: cuántos edges procesar por lote (batch).
@@ -526,6 +596,10 @@ class AStarRouter:
         self.vmax_h = max(1e-6, float(vmax_kmh_for_h))
 
     def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int, traffic: TrafficModel) -> Tuple[RouteLeg, SearchStats]:
+        """Calcula un tramo con A* usando costo temporal y heurística de tiempo geográfico.
+
+        La heurística estima el tiempo directo (gran círculo) con velocidad `vmax_h`.
+        """
         import heapq
         g_score: Dict[NodeId, float] = defaultdict(lambda: float("inf"))
         f_score: Dict[NodeId, float] = defaultdict(lambda: float("inf"))
@@ -565,6 +639,7 @@ class AStarRouter:
 class BFSRouter:
     """BFS para grafos no ponderados (o ponderar todo como 1). Útil como baseline/depuración."""
     def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int, traffic: TrafficModel) -> Tuple[RouteLeg, SearchStats]:
+        """Calcula un camino por BFS y luego suma tiempos reales sobre ese camino."""
         from collections import deque
         q = deque([src])
         parent: Dict[NodeId, Optional[NodeId]] = {src: None}
@@ -587,17 +662,23 @@ class BFSRouter:
 # Caches y par-a-par (batching)
 # ==========================================================
 class LRUCache:
+    """Cache LRU simple basada en OrderedDict.
+
+    No es thread-safe por sí misma; su uso concurrente debe coordinarse externamente.
+    """
     def __init__(self, capacity: int = 1024) -> None:
         self.capacity = capacity
         self._store: OrderedDict[Tuple[Any, ...], Any] = OrderedDict()
 
     def get(self, key: Tuple[Any, ...]) -> Optional[Any]:
+        """Obtiene un valor moviendo la clave al final (más reciente)."""
         if key in self._store:
             self._store.move_to_end(key)
             return self._store[key]
         return None
 
     def set(self, key: Tuple[Any, ...], value: Any) -> None:
+        """Inserta/actualiza un valor y recorta si excede la capacidad."""
         self._store[key] = value
         self._store.move_to_end(key)
         if len(self._store) > self.capacity:
@@ -608,19 +689,28 @@ class LRUCache:
 
 
 class RouteCache:
+    """Capa de caché para tramos (RouteLeg) con política LRU."""
     def __init__(self, capacity: int = 2048) -> None:
         self._lru = LRUCache(capacity)
 
     def get(self, key: Tuple[Any, ...]) -> Optional[RouteLeg]:
+        """Devuelve RouteLeg cacheado si existe para la clave dada."""
         return self._lru.get(key)
 
     def set(self, key: Tuple[Any, ...], leg: RouteLeg) -> None:
+        """Guarda un RouteLeg asociado a la clave dada."""
         self._lru.set(key, leg)
 
 
 
 
 class PairwiseDistanceService:
+    """Calcula matriz de tiempos y paths par-a-par entre waypoints.
+
+    - Selecciona router según `algorithm` (A*, Dijkstra o BFS).
+    - Aplica concurrencia por pares (optimizable a SSSP por origen).
+    - Usa `RouteCache` para memoizar tramos (src, dst, hora, algoritmo).
+    """
     def __init__(self, router_astar: AStarRouter, router_dijkstra: DijkstraRouter, route_cache: RouteCache, *, max_workers: int = 4) -> None:
         self.router_astar = router_astar
         self.router_dijkstra = router_dijkstra
@@ -636,6 +726,18 @@ class PairwiseDistanceService:
         algorithm: Algorithm,
         traffic: TrafficModel,
     ) -> Tuple[List[List[Seconds]], Dict[Tuple[int, int], List[NodeId]]]:
+        """Construye la matriz de tiempos y el mapa de paths para los `waypoints`.
+
+        Args:
+            graph: grafo vial.
+            waypoints: lista de nodos a considerar (incluye origen en índice 0).
+            hour: hora del día (afecta costos del tráfico).
+            algorithm: algoritmo base para cada tramo.
+            traffic: modelo de tráfico.
+        Returns:
+            time_matrix: matriz NxN de segundos entre cada par (i→j).
+            path_map: dict {(i, j) -> path de nodos}.
+        """
         n = len(waypoints)
         time_matrix: List[List[Seconds]] = [[float("inf")] * n for _ in range(n)]
         path_map: Dict[Tuple[int, int], List[NodeId]] = {}
@@ -677,11 +779,17 @@ class PairwiseDistanceService:
 # Solvers y splicer
 # ==========================================================
 class MultiStopSolver:
+    """Interfaz de solver de orden de visita (TSP/VRP simple)."""
     def solve(self, waypoints: List[NodeId], time_matrix: List[List[Seconds]], *, mode: RouteMode) -> List[int]:
         raise NotImplementedError
 
 
 class HeldKarpExact(MultiStopSolver):
+    """Solver exacto Held-Karp (DP) para TSP con origen fijo.
+
+    - Complejidad O(n^2 2^n), adecuado para n<=13 aprox.
+    - Soporta modo circuito agregando coste de regreso al origen en el cierre.
+    """
     def solve(self, waypoints: List[NodeId], time_matrix: List[List[Seconds]], *, mode: RouteMode) -> List[int]:
         n = len(waypoints)
         if n <= 1: return list(range(n))
@@ -725,6 +833,7 @@ class HeldKarpExact(MultiStopSolver):
 
 
 class HeuristicRoute(MultiStopSolver):
+    """Heurística NN + 2-opt con múltiples reinicios para TSP sencillo."""
     def __init__(self, restarts: int = 4) -> None:
         self.restarts = max(1, int(restarts))
 
@@ -770,7 +879,9 @@ class HeuristicRoute(MultiStopSolver):
 
 
 class RouteSplicer:
+    """Ensamblador de tramos individuales en una lista de RouteLegs según un orden dado."""
     def splice(self, waypoints: List[NodeId], visit_order_idx: List[int], path_map: Dict[Tuple[int, int], List[NodeId]], graph: Graph, time_matrix: List[List[Seconds]]) -> List[RouteLeg]:
+        """Concatena legs según `visit_order_idx` usando `path_map` y `time_matrix`."""
         legs: List[RouteLeg] = []
         for a, b in zip(visit_order_idx, visit_order_idx[1:]):
             src = waypoints[a]; dst = waypoints[b]
@@ -785,7 +896,9 @@ class RouteSplicer:
 # Servicio de ruteo
 # ==========================================================
 class RoutingService:
+    """Servicio de alto nivel: calcula rutas multi-destino y arma resultados completos."""
     def __init__(self, graph: Graph, traffic: TrafficModel, pairwise_service: PairwiseDistanceService, solver_exact: MultiStopSolver, solver_heur: MultiStopSolver, splicer: RouteSplicer) -> None:
+        """Inyecta dependencias: grafo, tráfico, servicio par-a-par, solvers y splicer."""
         self.graph = graph
         self.traffic = traffic
         self.pairwise = pairwise_service
@@ -797,6 +910,7 @@ class RoutingService:
         self.router_bfs = BFSRouter()
 
     def route_single(self, src: NodeId, dst: NodeId, *, hour: int, algorithm: Algorithm = Algorithm.ASTAR) -> RouteLeg:
+        """Calcula un único tramo src→dst con el algoritmo indicado."""
         if algorithm == Algorithm.DIJKSTRA:
             leg, _ = self.router_dijkstra.route(self.graph, src, dst, hour=hour, traffic=self.traffic)
         elif algorithm == Algorithm.BFS:
@@ -806,6 +920,7 @@ class RoutingService:
         return leg
 
     def route(self, request: RouteRequest) -> RouteResult:
+        """Calcula una ruta multi-destino completa según el modo y algoritmo seleccionados."""
         waypoints = [request.origin] + list(request.destinations)
         time_matrix, path_map = self.pairwise.compute_matrix(
             self.graph, waypoints, hour=request.hour, algorithm=request.algorithm, traffic=self.traffic
@@ -965,6 +1080,7 @@ def route_with_gemini(
 # Helpers geo / profiling
 # ==========================================================
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distancia de gran círculo en kilómetros entre dos puntos (lat, lon)."""
     R = 6371.0
     dlat = radians(lat2 - lat1)
     dlon = radians(lon2 - lon1)
@@ -973,6 +1089,7 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def _path_distance_m(graph: Graph, path: List[NodeId]) -> float:
+    """Suma las distancias de aristas a lo largo de un path de nodos."""
     d = 0.0
     for i in range(len(path) - 1):
         u, v = path[i], path[i + 1]

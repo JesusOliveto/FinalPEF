@@ -368,7 +368,7 @@ class Graph:
         _, border_c, next_id = add_grid_patch(center_xy_m=(
             0.0, 0.0), nx=10, ny=13, step_m=115.0, rotation_deg=-23, primary_mod=4, collector_mod=2, start_id=next_id)
         _, border_se, next_id = add_grid_patch(center_xy_m=(
-            850.0, -250.0), nx=5, ny=8, step_m=100.0, rotation_deg=0.0, primary_mod=4, collector_mod=2, start_id=next_id)
+            850.0, -250.0), nx=5, ny=16, step_m=100.0, rotation_deg=0.0, primary_mod=4, collector_mod=2, start_id=next_id)
         _, border_nw, next_id = add_grid_patch(center_xy_m=(-900.0, 600.0), nx=8, ny=6,
                                                step_m=115.0, rotation_deg=-22, primary_mod=4, collector_mod=2, start_id=next_id)
 

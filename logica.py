@@ -421,32 +421,103 @@ def _reconstruct(parent: Dict[NodeId, Optional[NodeId]], src: NodeId, dst: NodeI
     return chain
 
 
+# ====== helper para batching con generator (yield) ======
+def batcher(lista, batch_size: int):
+    """
+    Generador que produce sublistas de tamaño batch_size.
+    Cumple el requisito de usar yield y el patrón pedido.
+    """
+    for i in range(0, len(lista), batch_size):
+        yield lista[i:i + batch_size]
+
+
+# ====== Dijkstra con batching + threads + memo ======
 class DijkstraRouter:
-    def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int, traffic: TrafficModel) -> Tuple[RouteLeg, SearchStats]:
+    def __init__(self, *, batch_size: int = 64, max_workers: int = 4) -> None:
+        """
+        batch_size: cuántos edges procesar por lote (batch).
+        max_workers: grado de paralelismo para calcular costos de aristas.
+        """
+        self.batch_size = max(1, int(batch_size))
+        self.max_workers = max(1, int(max_workers))
+        # Memoización por (grafo, modelo_tráfico, src, dst, hora)
+        # Guarda el resultado completo (RouteLeg, SearchStats)
+        self._memo: Dict[Tuple[int, int, NodeId, NodeId, int], Tuple[RouteLeg, "SearchStats"]] = {}
+
+    def route(
+        self,
+        graph: Graph,
+        src: NodeId,
+        dst: NodeId,
+        *,
+        hour: int,
+        traffic: TrafficModel,
+    ) -> Tuple[RouteLeg, "SearchStats"]:
+        """
+        Dijkstra clásico, pero:
+        - Calcula relajaciones en batches (batcher + yield).
+        - Paraleliza el cálculo de tiempos de viaje por arista con ThreadPoolExecutor.
+        - Aplica memoización por (id(graph), id(traffic), src, dst, hour).
+        """
+        # ---------- memoización ----------
+        memo_key = (id(graph), id(traffic), src, dst, hour)
+        cached = self._memo.get(memo_key)
+        if cached is not None:
+            return cached  # (RouteLeg, SearchStats)
+
         import heapq
+        from collections import defaultdict
+        from concurrent.futures import ThreadPoolExecutor
+
         dist: Dict[NodeId, float] = defaultdict(lambda: float("inf"))
         parent: Dict[NodeId, Optional[NodeId]] = {src: None}
         stats = SearchStats()
+
         dist[src] = 0.0
         pq: List[Tuple[float, NodeId]] = [(0.0, src)]
         stats.queue_pushes += 1
-        while pq:
-            d, u = heapq.heappop(pq)
-            stats.queue_pops += 1
-            if d > dist[u]: continue
-            stats.expanded_nodes += 1
-            if u == dst: break
-            for e in graph.neighbors(u):
-                alt = d + traffic.travel_time_seconds(e, hour=hour)
-                if alt < dist[e.to]:
-                    dist[e.to] = alt
-                    parent[e.to] = u
-                    heapq.heappush(pq, (alt, e.to))
-                    stats.queue_pushes += 1
+
+        # Un único pool para toda la búsqueda (evita overhead por batch)
+        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+            while pq:
+                d, u = heapq.heappop(pq)
+                stats.queue_pops += 1
+                if d > dist[u]:
+                    continue
+                stats.expanded_nodes += 1
+                if u == dst:
+                    break
+
+                # Tomamos los vecinos y los procesamos en LOTES (batching)
+                vecinos = list(graph.neighbors(u))
+                for lote in batcher(vecinos, self.batch_size):
+                    # Función de relajación (pura) que corre en paralelo
+                    def _relax_edge(e: Edge) -> Tuple[NodeId, float]:
+                        # Calcula el costo alternativo sin tocar estado compartido
+                        alt = d + traffic.travel_time_seconds(e, hour=hour)
+                        return e.to, alt
+
+                    # Ejecutamos el cálculo de todos los alt del batch en threads
+                    resultados = list(pool.map(_relax_edge, lote))
+
+                    # Aplicamos los resultados secuencialmente (evita race conditions)
+                    for v, alt in resultados:
+                        if alt < dist[v]:
+                            dist[v] = alt
+                            parent[v] = u
+                            heapq.heappush(pq, (alt, v))
+                            stats.queue_pushes += 1
+
         path = _reconstruct(parent, src, dst)
         seconds = dist[dst]
         distance_m = _path_distance_m(graph, path)
-        return RouteLeg(src, dst, path, seconds, distance_m, stats.expanded_nodes), stats
+        leg = RouteLeg(src, dst, path, seconds, distance_m, stats.expanded_nodes)
+
+        # Guardamos en memo y devolvemos
+        out = (leg, stats)
+        self._memo[memo_key] = out
+        return out
+
 
 
 class AStarRouter:

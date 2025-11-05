@@ -20,16 +20,21 @@ from logica import (
 )
 
 # =================== UI config ===================
-st.set_page_config(page_title="Jesús María · Rutas Inteligentes", page_icon="🏘️", layout="wide")
+st.set_page_config(
+    page_title="Jesús María · Rutas Inteligentes",
+    page_icon="🏘️",
+    layout="wide")
 
-COLOR_ROAD_PRIMARY   = [45, 85, 255]
+COLOR_ROAD_PRIMARY = [45, 85, 255]
 COLOR_ROAD_COLLECTOR = [92, 112, 177]
-COLOR_ROAD_RES       = [150, 160, 180]
-COLOR_ROUTE          = [12, 180, 105]
+COLOR_ROAD_RES = [150, 160, 180]
+COLOR_ROUTE = [12, 180, 105]
 LAT_JM = -30.9859
 LON_JM = -64.0947
 
 # =================== Motor (cache) ===================
+
+
 @st.cache_resource(show_spinner=False)
 def load_services(driver_max_kmh: float = 40.0):
     """Inicializa y cachea el motor de ruteo y sus servicios.
@@ -48,27 +53,50 @@ def load_services(driver_max_kmh: float = 40.0):
     """
     graph = Graph.build_jesus_maria_hardcoded()
     traffic = HistoricalTrafficModel(driver_max_kmh=driver_max_kmh)
-    pairwise = PairwiseDistanceService(AStarRouter(driver_max_kmh), DijkstraRouter(), RouteCache(), max_workers=4)
+    pairwise = PairwiseDistanceService(
+        AStarRouter(driver_max_kmh),
+        DijkstraRouter(),
+        RouteCache(),
+        max_workers=4)
     service = RoutingService(
-        graph=graph, traffic=traffic, pairwise_service=pairwise,
-        solver_exact=HeldKarpExact(), solver_heur=HeuristicRoute(restarts=4), splicer=RouteSplicer(),
+        graph=graph,
+        traffic=traffic,
+        pairwise_service=pairwise,
+        solver_exact=HeldKarpExact(),
+        solver_heur=HeuristicRoute(
+            restarts=4),
+        splicer=RouteSplicer(),
     )
     return graph, traffic, service
 
+
 # =================== Sidebar ===================
 st.sidebar.title("⚙️ Configuración")
-algorithm = st.sidebar.selectbox("Algoritmo base (tramos)", [Algorithm.ASTAR.value, Algorithm.DIJKSTRA.value, Algorithm.BFS.value], index=0)
-mode = st.sidebar.selectbox("Modo de ruta", [RouteMode.VISIT_ALL_OPEN.value, RouteMode.VISIT_ALL_CIRCUIT.value, RouteMode.FIXED_ORDER.value], index=0)
+algorithm = st.sidebar.selectbox(
+    "Algoritmo base (tramos)", [
+        Algorithm.ASTAR.value, Algorithm.DIJKSTRA.value, Algorithm.BFS.value], index=0)
+mode = st.sidebar.selectbox("Modo de ruta",
+                            [RouteMode.VISIT_ALL_OPEN.value,
+                             RouteMode.VISIT_ALL_CIRCUIT.value,
+                             RouteMode.FIXED_ORDER.value],
+                            index=0)
 use_gemini = st.sidebar.checkbox("Orden óptimo con Gemini (IA)", value=False)
-color_by = st.sidebar.radio("Color de calles", ["class", "traffic"], index=0, horizontal=True)
+color_by = st.sidebar.radio(
+    "Color de calles", [
+        "class", "traffic"], index=0, horizontal=True)
 
 with st.sidebar.expander("Tráfico y vehículo", expanded=False):
     hour = st.slider("Hora del día", 0, 23, 8)
-    driver_speed = st.slider("Velocidad del conductor (km/h)", min_value=20, max_value=80, value=40, step=5)
+    driver_speed = st.slider(
+        "Velocidad del conductor (km/h)",
+        min_value=20,
+        max_value=80,
+        value=40,
+        step=5)
 
 # Inicialización del motor con la velocidad elegida
 graph, traffic, service = load_services(driver_speed)
- 
+
 
 # =================== Helpers de visualización ===================
 def build_road_layer(graph: Graph, *, hour: int, color_by: str = "class"):
@@ -87,14 +115,13 @@ def build_road_layer(graph: Graph, *, hour: int, color_by: str = "class"):
     for from_node_id, edge in graph.iter_edges():
         node_from = graph.get_node(from_node_id)
         node_to = graph.get_node(edge.to)
-        path_width_px = 6 if edge.road_class.value == "primary" else (4 if edge.road_class.value == "collector" else 2.5)
-        base_color = (
-            COLOR_ROAD_PRIMARY if edge.road_class.value == "primary" else (
-                COLOR_ROAD_COLLECTOR if edge.road_class.value == "collector" else COLOR_ROAD_RES
-            )
-        )
+        path_width_px = 6 if edge.road_class.value == "primary" else (
+            4 if edge.road_class.value == "collector" else 2.5)
+        base_color = (COLOR_ROAD_PRIMARY if edge.road_class.value == "primary" else (
+            COLOR_ROAD_COLLECTOR if edge.road_class.value == "collector" else COLOR_ROAD_RES))
         if color_by == "traffic":
-            congestion_factor = traffic_factor_by_hour.get(hour, {}).get(edge.road_class, 1.0)
+            congestion_factor = traffic_factor_by_hour.get(
+                hour, {}).get(edge.road_class, 1.0)
             red_channel = min(255, int(100 + (congestion_factor - 1.0) * 240))
             color_rgba = [red_channel, base_color[1], base_color[2], 160]
         else:
@@ -105,8 +132,14 @@ def build_road_layer(graph: Graph, *, hour: int, color_by: str = "class"):
             "color": color_rgba,
         })
     return pdk.Layer(
-        "PathLayer", data=road_data, get_path="path", get_width="width", get_color="color", width_min_pixels=2, pickable=False
-    )
+        "PathLayer",
+        data=road_data,
+        get_path="path",
+        get_width="width",
+        get_color="color",
+        width_min_pixels=2,
+        pickable=False)
+
 
 def build_route_layers(route_legs: List[RouteLeg], graph: Graph):
     """Construye las capas de ruta (PathLayer) y marcadores (ScatterplotLayer).
@@ -124,7 +157,8 @@ def build_route_layers(route_legs: List[RouteLeg], graph: Graph):
     path_coords: List[Dict[str, List[List[float]]]] = []
     marker_points: List[Dict[str, float]] = []
     origin_node = graph.get_node(route_legs[0].src)
-    marker_points.append({"lon": origin_node.lon, "lat": origin_node.lat, "kind": "Origen"})
+    marker_points.append(
+        {"lon": origin_node.lon, "lat": origin_node.lat, "kind": "Origen"})
     for leg in route_legs:
         leg_coords: List[List[float]] = []
         for node_id in leg.path:
@@ -132,16 +166,30 @@ def build_route_layers(route_legs: List[RouteLeg], graph: Graph):
             leg_coords.append([current_node.lon, current_node.lat])
         path_coords.append({"path": leg_coords})
         destination_node = graph.get_node(leg.dst)
-        marker_points.append({"lon": destination_node.lon, "lat": destination_node.lat, "kind": "Destino"})
+        marker_points.append(
+            {"lon": destination_node.lon, "lat": destination_node.lat, "kind": "Destino"})
     layer_path = pdk.Layer(
-        "PathLayer", data=path_coords, get_path="path", get_width=7, get_color=COLOR_ROUTE, width_min_pixels=3
-    )
+        "PathLayer",
+        data=path_coords,
+        get_path="path",
+        get_width=7,
+        get_color=COLOR_ROUTE,
+        width_min_pixels=3)
     layer_points = pdk.Layer(
-        "ScatterplotLayer", data=marker_points, get_position="[lon, lat]", get_radius=30, get_fill_color=[20, 200, 120], pickable=True
-    )
+        "ScatterplotLayer",
+        data=marker_points,
+        get_position="[lon, lat]",
+        get_radius=30,
+        get_fill_color=[
+            20,
+            200,
+            120],
+        pickable=True)
     return layer_path, layer_points
 
 # =================== POIs ===================
+
+
 @st.cache_data(show_spinner=False)
 def make_pois(_graph: Graph) -> Dict[str, int]:
     """Genera un conjunto pequeño de POIs de ejemplo mapeados a ids de nodos.
@@ -156,16 +204,24 @@ def make_pois(_graph: Graph) -> Dict[str, int]:
     """
     rnd = random.Random(99)
     nodes = list(_graph.iter_nodes())
-    center_node = nodes[len(nodes)//2]
+    center_node = nodes[len(nodes) // 2]
     sampled_nodes = rnd.sample(nodes, k=min(40, len(nodes)))
     labels = [
-        "Plaza","Escuela Pío León","Supermercado","Municipalidad","Club Social",
-        "Comisaría","Capilla","Biblioteca","Terminal","Clínica Municipal"
-    ]
+        "Plaza",
+        "Escuela Pío León",
+        "Supermercado",
+        "Municipalidad",
+        "Club Social",
+        "Comisaría",
+        "Capilla",
+        "Biblioteca",
+        "Terminal",
+        "Clínica Municipal"]
     pois: Dict[str, int] = {labels[0]: center_node.id}
-    for idx, node in enumerate(sampled_nodes[:len(labels)-1], start=1):
+    for idx, node in enumerate(sampled_nodes[:len(labels) - 1], start=1):
         pois[labels[idx]] = node.id
     return pois
+
 
 # =================== Encabezado ===================
 st.title("🏘️ Jesús María: Rutas Inteligentes")
@@ -177,7 +233,8 @@ st.sidebar.markdown("---")
 origin_label = st.sidebar.selectbox("Origen (POI)", list(POIS.keys()), index=0)
 origin_id = POIS[origin_label]
 choices = [k for k in POIS.keys() if POIS[k] != origin_id]
-selected_labels = st.sidebar.multiselect("Destinos (POIs)", choices, default=choices[:3])
+selected_labels = st.sidebar.multiselect(
+    "Destinos (POIs)", choices, default=choices[:3])
 origin = int(origin_id)
 destinations = [POIS[l] for l in selected_labels]
 
@@ -189,8 +246,8 @@ if clear:
 
 # =================== Cámara y capas (sin controles en UI) ===================
 nodes = list(graph.iter_nodes())
-lat_c = sum(n.lat for n in nodes)/len(nodes)
-lon_c = sum(n.lon for n in nodes)/len(nodes)
+lat_c = sum(n.lat for n in nodes) / len(nodes)
+lon_c = sum(n.lon for n in nodes) / len(nodes)
 pitch = 0
 zoom = 14.3
 
@@ -208,7 +265,11 @@ if calc and destinations:
     )
     if use_gemini:
         try:
-            res = route_with_gemini(service, req, api_key=st.secrets["api_key"], model="gemini-2.5-flash")
+            res = route_with_gemini(
+                service,
+                req,
+                api_key=st.secrets["api_key"],
+                model="gemini-2.5-flash")
         except Exception as e:
             st.warning(f"Gemini falló ({e}). Se usa el solver local.")
             res = service.route(req)
@@ -222,13 +283,20 @@ if calc and destinations:
 route_layer, points_layer = build_route_layers(route_leg_list, graph)
 
 layers = [roads_layer]
-if route_layer: layers.append(route_layer)
-if points_layer: layers.append(points_layer)
+if route_layer:
+    layers.append(route_layer)
+if points_layer:
+    layers.append(points_layer)
 
 st.pydeck_chart(
     pdk.Deck(
-        initial_view_state=pdk.ViewState(latitude=lat_c, longitude=lon_c, zoom=zoom, pitch=pitch),
-        layers=layers, map_style=None,
+        initial_view_state=pdk.ViewState(
+            latitude=lat_c,
+            longitude=lon_c,
+            zoom=zoom,
+            pitch=pitch),
+        layers=layers,
+        map_style=None,
     ),
     use_container_width=True,
 )
@@ -238,18 +306,25 @@ col1, col2 = st.columns([1, 1])
 with col1:
     st.subheader("📍 Selección")
     st.write(f"**Origen:** #{origin}")
-    st.write("**Destinos:** " + (", ".join(f"#{d}" for d in destinations) if destinations else "—"))
+    st.write("**Destinos:** " +
+             (", ".join(f"#{d}" for d in destinations) if destinations else "—"))
 
 with col2:
     st.subheader("📊 Métricas")
     if result_summary:
         st.success(
             f"Tiempo total estimado: **{result_summary.total_seconds:.1f}s** · "
-            f"Distancia: **{result_summary.total_distance_m/1000:.2f} km** · "
+            f"Distancia: **{result_summary.total_distance_m / 1000:.2f} km** · "
             f"Algoritmo: {result_summary.algorithm_summary}"
         )
         with st.expander("Detalle de tramos"):
             for i, leg in enumerate(route_leg_list, 1):
-                st.write(f"{i}. #{leg.src} → #{leg.dst} · {leg.seconds:.1f}s · {leg.distance_m/1000:.3f} km")
+                st.write(
+                    f"{i}. #{
+                        leg.src} → #{
+                        leg.dst} · {
+                        leg.seconds:.1f}s · {
+                        leg.distance_m /
+                        1000:.3f} km")
     else:
         st.info("Calculá una ruta para ver métricas.")

@@ -18,7 +18,8 @@ from collections import defaultdict, OrderedDict
 from math import radians, sin, cos, asin, sqrt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import unittest
-import cProfile, pstats
+import cProfile
+import pstats
 import io
 
 
@@ -63,8 +64,6 @@ Meters = float
 KmPerHour = float
 
 
-
-
 # ==========================================================
 # Grafo
 # ==========================================================
@@ -101,6 +100,7 @@ class Edge:
 
 class Graph:
     """Grafo dirigido con nodos georreferenciados y aristas con atributos viales."""
+
     def __init__(self) -> None:
         """Crea un grafo vacío con listas de adyacencia."""
         self.nodes: Dict[NodeId, Node] = {}
@@ -121,7 +121,13 @@ class Graph:
         one_way: bool = False,
     ) -> None:
         """Agrega una arista dirigida u→v con atributos viales."""
-        self.adj[u].append(Edge(v, distance_m, road_class, freeflow_kmh, one_way))
+        self.adj[u].append(
+            Edge(
+                v,
+                distance_m,
+                road_class,
+                freeflow_kmh,
+                one_way))
 
     def add_bidirectional(
         self,
@@ -227,24 +233,41 @@ class Graph:
 
             def class_h(row: int) -> RoadClass:
                 """Clase vial para horizontales según la fila."""
-                if row % primary_mod == 0: return RoadClass.PRIMARY
-                if row % collector_mod == 0: return RoadClass.COLLECTOR
+                if row % primary_mod == 0:
+                    return RoadClass.PRIMARY
+                if row % collector_mod == 0:
+                    return RoadClass.COLLECTOR
                 return RoadClass.RESIDENTIAL
 
             def class_v(col: int) -> RoadClass:
                 """Clase vial para verticales según la columna."""
-                if col % primary_mod == 0: return RoadClass.PRIMARY
-                if col % collector_mod == 0: return RoadClass.COLLECTOR
+                if col % primary_mod == 0:
+                    return RoadClass.PRIMARY
+                if col % collector_mod == 0:
+                    return RoadClass.COLLECTOR
                 return RoadClass.RESIDENTIAL
 
-            def add_one_way(u: int, v: int, dist: float, rc: RoadClass, sp: float, *, is_horizontal: bool, r: int, c: int):
+            def add_one_way(
+                u: int,
+                v: int,
+                dist: float,
+                rc: RoadClass,
+                sp: float,
+                *,
+                is_horizontal: bool,
+                r: int,
+                    c: int):
                 """Agrega una arista de un sentido con patrón alternado por fila/columna."""
                 if is_horizontal:
-                    if (r % 2) == 0: g.add_edge(u, v, dist, rc, sp, one_way=True)
-                    else:            g.add_edge(v, u, dist, rc, sp, one_way=True)
+                    if (r % 2) == 0:
+                        g.add_edge(u, v, dist, rc, sp, one_way=True)
+                    else:
+                        g.add_edge(v, u, dist, rc, sp, one_way=True)
                 else:
-                    if (c % 2) == 0: g.add_edge(u, v, dist, rc, sp, one_way=True)
-                    else:            g.add_edge(v, u, dist, rc, sp, one_way=True)
+                    if (c % 2) == 0:
+                        g.add_edge(u, v, dist, rc, sp, one_way=True)
+                    else:
+                        g.add_edge(v, u, dist, rc, sp, one_way=True)
 
             for r in range(ny):
                 for c in range(nx):
@@ -252,19 +275,45 @@ class Graph:
                     if c + 1 < nx:
                         v = ids[r][c + 1]
                         node_a, node_b = g.get_node(u), g.get_node(v)
-                        distance_m = haversine_km(node_a.lat, node_a.lon, node_b.lat, node_b.lon) * 1000.0
+                        distance_m = haversine_km(
+                            node_a.lat, node_a.lon, node_b.lat, node_b.lon) * 1000.0
                         road_class = class_h(r)
-                        speed_kmh = v_pri if road_class == RoadClass.PRIMARY else (v_col if road_class == RoadClass.COLLECTOR else v_res)
-                        if BIDIR[road_class]: g.add_bidirectional(u, v, distance_m, road_class, speed_kmh)
-                        else:                  add_one_way(u, v, distance_m, road_class, speed_kmh, is_horizontal=True, r=r, c=c)
+                        speed_kmh = v_pri if road_class == RoadClass.PRIMARY else (
+                            v_col if road_class == RoadClass.COLLECTOR else v_res)
+                        if BIDIR[road_class]:
+                            g.add_bidirectional(
+                                u, v, distance_m, road_class, speed_kmh)
+                        else:
+                            add_one_way(
+                                u,
+                                v,
+                                distance_m,
+                                road_class,
+                                speed_kmh,
+                                is_horizontal=True,
+                                r=r,
+                                c=c)
                     if r + 1 < ny:
                         v = ids[r + 1][c]
                         node_a, node_b = g.get_node(u), g.get_node(v)
-                        distance_m = haversine_km(node_a.lat, node_a.lon, node_b.lat, node_b.lon) * 1000.0
+                        distance_m = haversine_km(
+                            node_a.lat, node_a.lon, node_b.lat, node_b.lon) * 1000.0
                         road_class = class_v(c)
-                        speed_kmh = v_pri if road_class == RoadClass.PRIMARY else (v_col if road_class == RoadClass.COLLECTOR else v_res)
-                        if BIDIR[road_class]: g.add_bidirectional(u, v, distance_m, road_class, speed_kmh)
-                        else:                  add_one_way(u, v, distance_m, road_class, speed_kmh, is_horizontal=False, r=r, c=c)
+                        speed_kmh = v_pri if road_class == RoadClass.PRIMARY else (
+                            v_col if road_class == RoadClass.COLLECTOR else v_res)
+                        if BIDIR[road_class]:
+                            g.add_bidirectional(
+                                u, v, distance_m, road_class, speed_kmh)
+                        else:
+                            add_one_way(
+                                u,
+                                v,
+                                distance_m,
+                                road_class,
+                                speed_kmh,
+                                is_horizontal=False,
+                                r=r,
+                                c=c)
 
             border: List[int] = []
             for r in range(ny):
@@ -273,14 +322,22 @@ class Graph:
                         border.append(ids[r][c])
             return ids, border, next_id
 
-        def connect_nearest(border_a: List[int], border_b: List[int], *, k_pairs: int, max_dist_m: float, road: RoadClass, v_kmh: float):
+        def connect_nearest(
+                border_a: List[int],
+                border_b: List[int],
+                *,
+                k_pairs: int,
+                max_dist_m: float,
+                road: RoadClass,
+                v_kmh: float):
             """Conecta pares más cercanos entre dos bordes de parches respetando un máx. de distancia."""
             pairs: List[Tuple[float, int, int]] = []
             for u in border_a:
                 n1 = g.get_node(u)
                 for v in border_b:
                     n2 = g.get_node(v)
-                    distance_m = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
+                    distance_m = haversine_km(
+                        n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
                     if distance_m <= max_dist_m:
                         pairs.append((distance_m, u, v))
             pairs.sort(key=lambda x: x[0])
@@ -289,60 +346,105 @@ class Graph:
             for d, u, v in pairs:
                 if u in used_a or v in used_b:
                     continue
-                if BIDIR_CONNECTORS: g.add_bidirectional(u, v, d, road, v_kmh)
+                if BIDIR_CONNECTORS:
+                    g.add_bidirectional(u, v, d, road, v_kmh)
                 else:
-                    if (cnt % 2) == 0: g.add_edge(u, v, d, road, v_kmh, one_way=True)
-                    else:              g.add_edge(v, u, d, road, v_kmh, one_way=True)
-                used_a.add(u); used_b.add(v)
+                    if (cnt % 2) == 0:
+                        g.add_edge(u, v, d, road, v_kmh, one_way=True)
+                    else:
+                        g.add_edge(v, u, d, road, v_kmh, one_way=True)
+                used_a.add(u)
+                used_b.add(v)
                 cnt += 1
-                if cnt >= k_pairs: break
+                if cnt >= k_pairs:
+                    break
 
         next_id = 0
 
         # Parches de grilla
-        _, border_c, next_id  = add_grid_patch(center_xy_m=(0.0, 0.0),      nx=10, ny=13, step_m=115.0, rotation_deg=-23, primary_mod=4, collector_mod=2, start_id=next_id)
-        _, border_se, next_id = add_grid_patch(center_xy_m=(850.0, -250.0), nx=5,  ny=8,  step_m=100.0, rotation_deg=0.0,  primary_mod=4, collector_mod=2, start_id=next_id)
-        _, border_nw, next_id = add_grid_patch(center_xy_m=(-900.0, 600.0), nx=8,  ny=6,  step_m=115.0, rotation_deg=-22,  primary_mod=4, collector_mod=2, start_id=next_id)
+        _, border_c, next_id = add_grid_patch(center_xy_m=(
+            0.0, 0.0), nx=10, ny=13, step_m=115.0, rotation_deg=-23, primary_mod=4, collector_mod=2, start_id=next_id)
+        _, border_se, next_id = add_grid_patch(center_xy_m=(
+            850.0, -250.0), nx=5, ny=8, step_m=100.0, rotation_deg=0.0, primary_mod=4, collector_mod=2, start_id=next_id)
+        _, border_nw, next_id = add_grid_patch(center_xy_m=(-900.0, 600.0), nx=8, ny=6,
+                                               step_m=115.0, rotation_deg=-22, primary_mod=4, collector_mod=2, start_id=next_id)
 
         # Diagonal RN-9 SW→NE
-        rn9_xy = [(-2000,-1300), (-1200,-800), (-400,-300), (0,0), (600,350), (1200,800), (1900,1250)]
+        rn9_xy = [(-2000, -1300), (-1200, -800), (-400, -300),
+                  (0, 0), (600, 350), (1200, 800), (1900, 1250)]
         v_pri = 70.0
         prev_id = None
         rn9_ids: List[int] = []
         for x, y in rn9_xy:
             lon, lat = to_lonlat(x, y)
-            g.add_node(next_id, lat, lon); rn9_ids.append(next_id)
+            g.add_node(next_id, lat, lon)
+            rn9_ids.append(next_id)
             if prev_id is not None:
                 n1, n2 = g.get_node(prev_id), g.get_node(next_id)
                 dist = haversine_km(n1.lat, n1.lon, n2.lat, n2.lon) * 1000.0
-                if BIDIR_RN9: g.add_bidirectional(prev_id, next_id, dist, RoadClass.PRIMARY, v_pri)
-                else:         g.add_edge(prev_id, next_id, dist, RoadClass.PRIMARY, v_pri, one_way=True)
-            prev_id = next_id; next_id += 1
+                if BIDIR_RN9:
+                    g.add_bidirectional(
+                        prev_id, next_id, dist, RoadClass.PRIMARY, v_pri)
+                else:
+                    g.add_edge(
+                        prev_id,
+                        next_id,
+                        dist,
+                        RoadClass.PRIMARY,
+                        v_pri,
+                        one_way=True)
+            prev_id = next_id
+            next_id += 1
 
         # Enlaces RN-9 → parches
-        def attach_poly_to_patch(poly_ids: List[int], border: List[int], *, every: int, max_dist_m: float):
+        def attach_poly_to_patch(
+                poly_ids: List[int],
+                border: List[int],
+                *,
+                every: int,
+                max_dist_m: float):
             """Conecta un polígono (RN-9) con un borde de parche cada N nodos si la distancia lo permite."""
             for i, pid in enumerate(poly_ids):
-                if i % every != 0: continue
+                if i % every != 0:
+                    continue
                 pn = g.get_node(pid)
                 best, best_d = None, 1e18
                 for b in border:
                     bn = g.get_node(b)
                     d = haversine_km(pn.lat, pn.lon, bn.lat, bn.lon) * 1000.0
-                    if d < best_d: best_d, best = d, b
+                    if d < best_d:
+                        best_d, best = d, b
                 if best is not None and best_d <= max_dist_m:
-                    if BIDIR_CONNECTORS: g.add_bidirectional(pid, best, best_d, RoadClass.COLLECTOR, 50.0)
+                    if BIDIR_CONNECTORS:
+                        g.add_bidirectional(
+                            pid, best, best_d, RoadClass.COLLECTOR, 50.0)
                     else:
-                        if (i % 2) == 0: g.add_edge(pid, best, best_d, RoadClass.COLLECTOR, 50.0, one_way=True)
-                        else:            g.add_edge(best, pid, best_d, RoadClass.COLLECTOR, 50.0, one_way=True)
+                        if (i % 2) == 0:
+                            g.add_edge(
+                                pid, best, best_d, RoadClass.COLLECTOR, 50.0, one_way=True)
+                        else:
+                            g.add_edge(
+                                best, pid, best_d, RoadClass.COLLECTOR, 50.0, one_way=True)
 
-        attach_poly_to_patch(rn9_ids, border_c,  every=1, max_dist_m=220.0)
+        attach_poly_to_patch(rn9_ids, border_c, every=1, max_dist_m=220.0)
         attach_poly_to_patch(rn9_ids, border_se, every=1, max_dist_m=220.0)
         attach_poly_to_patch(rn9_ids, border_nw, every=2, max_dist_m=250.0)
 
         # Conectores entre parches
-        connect_nearest(border_c,  border_se, k_pairs=10, max_dist_m=240.0, road=RoadClass.COLLECTOR, v_kmh=45.0)
-        connect_nearest(border_c,  border_nw, k_pairs=6,  max_dist_m=260.0, road=RoadClass.COLLECTOR, v_kmh=45.0)
+        connect_nearest(
+            border_c,
+            border_se,
+            k_pairs=10,
+            max_dist_m=240.0,
+            road=RoadClass.COLLECTOR,
+            v_kmh=45.0)
+        connect_nearest(
+            border_c,
+            border_nw,
+            k_pairs=6,
+            max_dist_m=260.0,
+            road=RoadClass.COLLECTOR,
+            v_kmh=45.0)
 
         return g
 
@@ -380,9 +482,15 @@ class HistoricalTrafficModel(TrafficModel):
         base: Dict[int, Dict[RoadClass, float]] = {}
         for h in range(24):
             if 7 <= h <= 9 or 17 <= h <= 19:
-                base[h] = {RoadClass.RESIDENTIAL: 1.2, RoadClass.COLLECTOR: 1.35, RoadClass.PRIMARY: 1.5}
+                base[h] = {
+                    RoadClass.RESIDENTIAL: 1.2,
+                    RoadClass.COLLECTOR: 1.35,
+                    RoadClass.PRIMARY: 1.5}
             else:
-                base[h] = {RoadClass.RESIDENTIAL: 1.05, RoadClass.COLLECTOR: 1.1, RoadClass.PRIMARY: 1.15}
+                base[h] = {
+                    RoadClass.RESIDENTIAL: 1.05,
+                    RoadClass.COLLECTOR: 1.1,
+                    RoadClass.PRIMARY: 1.15}
         return base
 
     def travel_time_seconds(self, edge: Edge, *, hour: int) -> Seconds:
@@ -396,7 +504,6 @@ class HistoricalTrafficModel(TrafficModel):
         effective_kmh = max(min(edge.freeflow_kmh, self.driver_max_kmh), 1e-6)
         hours = edge.distance_m / 1000.0 / effective_kmh
         return hours * 3600.0 * factor
-
 
 
 # ==========================================================
@@ -466,13 +573,17 @@ def iter_path_edges(path: List[NodeId]) -> Iterable[Tuple[NodeId, NodeId]]:
 # ==========================================================
 class SearchStats:
     """Estadísticas simples de una búsqueda (telemetría)."""
+
     def __init__(self) -> None:
         self.expanded_nodes = 0
         self.queue_pushes = 0
         self.queue_pops = 0
 
 
-def _reconstruct(parent: Dict[NodeId, Optional[NodeId]], src: NodeId, dst: NodeId) -> List[NodeId]:
+def _reconstruct(parent: Dict[NodeId,
+                              Optional[NodeId]],
+                 src: NodeId,
+                 dst: NodeId) -> List[NodeId]:
     """Reconstruye el camino src→dst usando punteros padre; devuelve [] si no hay ruta."""
     cur = dst
     chain = [cur]
@@ -503,6 +614,7 @@ class DijkstraRouter:
     - Concurrencia: paraleliza cálculo de costos de aristas dentro de cada lote.
     - Memoización: cachea resultados (RouteLeg, SearchStats) por clave de parámetros.
     """
+
     def __init__(self, *, batch_size: int = 64, max_workers: int = 4) -> None:
         """
         batch_size: cuántos edges procesar por lote (batch).
@@ -512,7 +624,8 @@ class DijkstraRouter:
         self.max_workers = max(1, int(max_workers))
         # Memoización por (grafo, modelo_tráfico, src, dst, hora)
         # Guarda el resultado completo (RouteLeg, SearchStats)
-        self._memo: Dict[Tuple[int, int, NodeId, NodeId, int], Tuple[RouteLeg, "SearchStats"]] = {}
+        self._memo: Dict[Tuple[int, int, NodeId, NodeId, int],
+                         Tuple[RouteLeg, "SearchStats"]] = {}
 
     def route(
         self,
@@ -563,14 +676,17 @@ class DijkstraRouter:
                 for lote in batcher(vecinos, self.batch_size):
                     # Función de relajación (pura) que corre en paralelo
                     def _relax_edge(e: Edge) -> Tuple[NodeId, float]:
-                        # Calcula el costo alternativo sin tocar estado compartido
+                        # Calcula el costo alternativo sin tocar estado
+                        # compartido
                         alt = d + traffic.travel_time_seconds(e, hour=hour)
                         return e.to, alt
 
-                    # Ejecutamos el cálculo de todos los alt del batch en threads
+                    # Ejecutamos el cálculo de todos los alt del batch en
+                    # threads
                     resultados = list(pool.map(_relax_edge, lote))
 
-                    # Aplicamos los resultados secuencialmente (evita race conditions)
+                    # Aplicamos los resultados secuencialmente (evita race
+                    # conditions)
                     for v, alt in resultados:
                         if alt < dist[v]:
                             dist[v] = alt
@@ -581,7 +697,13 @@ class DijkstraRouter:
         path = _reconstruct(parent, src, dst)
         seconds = dist[dst]
         distance_m = _path_distance_m(graph, path)
-        leg = RouteLeg(src, dst, path, seconds, distance_m, stats.expanded_nodes)
+        leg = RouteLeg(
+            src,
+            dst,
+            path,
+            seconds,
+            distance_m,
+            stats.expanded_nodes)
 
         # Guardamos en memo y devolvemos
         out = (leg, stats)
@@ -589,13 +711,13 @@ class DijkstraRouter:
         return out
 
 
-
 class AStarRouter:
     def __init__(self, vmax_kmh_for_h: KmPerHour = 50.0) -> None:
         """A* con heurística inline: tiempo geo optimista usando vmax_kmh_for_h."""
         self.vmax_h = max(1e-6, float(vmax_kmh_for_h))
 
-    def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int, traffic: TrafficModel) -> Tuple[RouteLeg, SearchStats]:
+    def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int,
+              traffic: TrafficModel) -> Tuple[RouteLeg, SearchStats]:
         """Calcula un tramo con A* usando costo temporal y heurística de tiempo geográfico.
 
         La heurística estima el tiempo directo (gran círculo) con velocidad `vmax_h`.
@@ -620,9 +742,11 @@ class AStarRouter:
             _, u = heapq.heappop(pq)
             stats.queue_pops += 1
             stats.expanded_nodes += 1
-            if u == dst: break
+            if u == dst:
+                break
             for e in graph.neighbors(u):
-                tentative = g_score[u] + traffic.travel_time_seconds(e, hour=hour)
+                tentative = g_score[u] + \
+                    traffic.travel_time_seconds(e, hour=hour)
                 if tentative < g_score[e.to]:
                     parent[e.to] = u
                     g_score[e.to] = tentative
@@ -633,29 +757,43 @@ class AStarRouter:
         path = _reconstruct(parent, src, dst)
         seconds = g_score[dst]
         distance_m = _path_distance_m(graph, path)
-        return RouteLeg(src, dst, path, seconds, distance_m, stats.expanded_nodes), stats
+        return RouteLeg(src, dst, path, seconds, distance_m,
+                        stats.expanded_nodes), stats
 
 
 class BFSRouter:
     """BFS para grafos no ponderados (o ponderar todo como 1). Útil como baseline/depuración."""
-    def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int, traffic: TrafficModel) -> Tuple[RouteLeg, SearchStats]:
+
+    def route(self, graph: Graph, src: NodeId, dst: NodeId, *, hour: int,
+              traffic: TrafficModel) -> Tuple[RouteLeg, SearchStats]:
         """Calcula un camino por BFS y luego suma tiempos reales sobre ese camino."""
         from collections import deque
         q = deque([src])
         parent: Dict[NodeId, Optional[NodeId]] = {src: None}
-        stats = SearchStats(); stats.queue_pushes += 1
+        stats = SearchStats()
+        stats.queue_pushes += 1
         while q:
-            u = q.popleft(); stats.queue_pops += 1; stats.expanded_nodes += 1
-            if u == dst: break
+            u = q.popleft()
+            stats.queue_pops += 1
+            stats.expanded_nodes += 1
+            if u == dst:
+                break
             for e in graph.neighbors(u):
                 if e.to not in parent:
                     parent[e.to] = u
-                    q.append(e.to); stats.queue_pushes += 1
+                    q.append(e.to)
+                    stats.queue_pushes += 1
         path = _reconstruct(parent, src, dst)
         # tiempo estimado: suma tiempos reales para no romper métricas
-        seconds = sum(traffic.travel_time_seconds(next(e for e in graph.neighbors(u) if e.to == v), hour=hour) for u, v in iter_path_edges(path)) if path else float("inf")
+        seconds = sum(
+            traffic.travel_time_seconds(
+                next(
+                    e for e in graph.neighbors(u) if e.to == v),
+                hour=hour) for u,
+            v in iter_path_edges(path)) if path else float("inf")
         dist_m = _path_distance_m(graph, path)
-        return RouteLeg(src, dst, path, seconds, dist_m, stats.expanded_nodes), stats
+        return RouteLeg(src, dst, path, seconds, dist_m,
+                        stats.expanded_nodes), stats
 
 
 # ==========================================================
@@ -666,6 +804,7 @@ class LRUCache:
 
     No es thread-safe por sí misma; su uso concurrente debe coordinarse externamente.
     """
+
     def __init__(self, capacity: int = 1024) -> None:
         self.capacity = capacity
         self._store: OrderedDict[Tuple[Any, ...], Any] = OrderedDict()
@@ -685,11 +824,9 @@ class LRUCache:
             self._store.popitem(last=False)
 
 
-
-
-
 class RouteCache:
     """Capa de caché para tramos (RouteLeg) con política LRU."""
+
     def __init__(self, capacity: int = 2048) -> None:
         self._lru = LRUCache(capacity)
 
@@ -702,8 +839,6 @@ class RouteCache:
         self._lru.set(key, leg)
 
 
-
-
 class PairwiseDistanceService:
     """Calcula matriz de tiempos y paths par-a-par entre waypoints.
 
@@ -711,7 +846,14 @@ class PairwiseDistanceService:
     - Aplica concurrencia por pares (optimizable a SSSP por origen).
     - Usa `RouteCache` para memoizar tramos (src, dst, hora, algoritmo).
     """
-    def __init__(self, router_astar: AStarRouter, router_dijkstra: DijkstraRouter, route_cache: RouteCache, *, max_workers: int = 4) -> None:
+
+    def __init__(
+            self,
+            router_astar: AStarRouter,
+            router_dijkstra: DijkstraRouter,
+            route_cache: RouteCache,
+            *,
+            max_workers: int = 4) -> None:
         self.router_astar = router_astar
         self.router_dijkstra = router_dijkstra
         self.route_cache = route_cache
@@ -739,12 +881,21 @@ class PairwiseDistanceService:
             path_map: dict {(i, j) -> path de nodos}.
         """
         n = len(waypoints)
-        time_matrix: List[List[Seconds]] = [[float("inf")] * n for _ in range(n)]
+        time_matrix: List[List[Seconds]] = [
+            [float("inf")] * n for _ in range(n)]
         path_map: Dict[Tuple[int, int], List[NodeId]] = {}
 
-        def route_pair(i: int, j: int) -> Tuple[int, int, Seconds, List[NodeId], RouteLeg]:
+        def route_pair(i: int,
+                       j: int) -> Tuple[int,
+                                        int,
+                                        Seconds,
+                                        List[NodeId],
+                                        RouteLeg]:
             if i == j:
-                return i, j, 0.0, [waypoints[i]], RouteLeg(waypoints[i], waypoints[j], [waypoints[i]], 0.0, 0.0, 0)
+                return i, j, 0.0, [
+                    waypoints[i]], RouteLeg(
+                    waypoints[i], waypoints[j], [
+                        waypoints[i]], 0.0, 0.0, 0)
             src, dst = waypoints[i], waypoints[j]
             cache_key = ("LEG", src, dst, hour, algorithm.value)
             cached = self.route_cache.get(cache_key)
@@ -752,9 +903,11 @@ class PairwiseDistanceService:
                 return i, j, cached.seconds, cached.path, cached
             # seleccionar router
             if algorithm == Algorithm.ASTAR:
-                leg, _ = self.router_astar.route(graph, src, dst, hour=hour, traffic=traffic)
+                leg, _ = self.router_astar.route(
+                    graph, src, dst, hour=hour, traffic=traffic)
             elif algorithm == Algorithm.DIJKSTRA:
-                leg, _ = self.router_dijkstra.route(graph, src, dst, hour=hour, traffic=traffic)
+                leg, _ = self.router_dijkstra.route(
+                    graph, src, dst, hour=hour, traffic=traffic)
             else:
                 # BFS directo
                 bfs = BFSRouter()
@@ -780,7 +933,12 @@ class PairwiseDistanceService:
 # ==========================================================
 class MultiStopSolver:
     """Interfaz de solver de orden de visita (TSP/VRP simple)."""
-    def solve(self, waypoints: List[NodeId], time_matrix: List[List[Seconds]], *, mode: RouteMode) -> List[int]:
+
+    def solve(self,
+              waypoints: List[NodeId],
+              time_matrix: List[List[Seconds]],
+              *,
+              mode: RouteMode) -> List[int]:
         raise NotImplementedError
 
 
@@ -790,9 +948,15 @@ class HeldKarpExact(MultiStopSolver):
     - Complejidad O(n^2 2^n), adecuado para n<=13 aprox.
     - Soporta modo circuito agregando coste de regreso al origen en el cierre.
     """
-    def solve(self, waypoints: List[NodeId], time_matrix: List[List[Seconds]], *, mode: RouteMode) -> List[int]:
+
+    def solve(self,
+              waypoints: List[NodeId],
+              time_matrix: List[List[Seconds]],
+              *,
+              mode: RouteMode) -> List[int]:
         n = len(waypoints)
-        if n <= 1: return list(range(n))
+        if n <= 1:
+            return list(range(n))
         from math import inf
         ALL = 1 << n
         dp = [[inf] * n for _ in range(ALL)]
@@ -800,23 +964,29 @@ class HeldKarpExact(MultiStopSolver):
         origin = 0
         dp[1 << origin][origin] = 0.0
         for mask in range(ALL):
-            if not (mask & (1 << origin)): continue
+            if not (mask & (1 << origin)):
+                continue
             for j in range(n):
-                if not (mask & (1 << j)): continue
+                if not (mask & (1 << j)):
+                    continue
                 cj = dp[mask][j]
-                if cj == inf: continue
+                if cj == inf:
+                    continue
                 for k in range(n):
-                    if mask & (1 << k): continue
+                    if mask & (1 << k):
+                        continue
                     nm = mask | (1 << k)
                     cand = cj + time_matrix[j][k]
                     if cand < dp[nm][k]:
-                        dp[nm][k] = cand; prv[nm][k] = j
+                        dp[nm][k] = cand
+                        prv[nm][k] = j
         full = ALL - 1
         if mode == RouteMode.VISIT_ALL_CIRCUIT:
             best, last = float("inf"), -1
             for j in range(n):
                 cand = dp[full][j] + time_matrix[j][0]
-                if cand < best: best, last = cand, j
+                if cand < best:
+                    best, last = cand, j
         else:
             last = min(range(n), key=lambda j: dp[full][j])
         order = []
@@ -824,7 +994,8 @@ class HeldKarpExact(MultiStopSolver):
         while last != -1:
             order.append(last)
             p = prv[mask][last]
-            if p == -1: break
+            if p == -1:
+                break
             mask &= ~(1 << last)
             last = p
         order.append(0)
@@ -834,22 +1005,32 @@ class HeldKarpExact(MultiStopSolver):
 
 class HeuristicRoute(MultiStopSolver):
     """Heurística NN + 2-opt con múltiples reinicios para TSP sencillo."""
+
     def __init__(self, restarts: int = 4) -> None:
         self.restarts = max(1, int(restarts))
 
-    def solve(self, waypoints: List[NodeId], time_matrix: List[List[Seconds]], *, mode: RouteMode) -> List[int]:
+    def solve(self,
+              waypoints: List[NodeId],
+              time_matrix: List[List[Seconds]],
+              *,
+              mode: RouteMode) -> List[int]:
         n = len(waypoints)
-        if n <= 1: return list(range(n))
+        if n <= 1:
+            return list(range(n))
         circuit = mode == RouteMode.VISIT_ALL_CIRCUIT
 
         def route_cost(order: List[int]) -> float:
             c = 0.0
-            for a, b in zip(order, order[1:]): c += time_matrix[a][b]
-            if circuit: c += time_matrix[order[-1]][order[0]]
+            for a, b in zip(order, order[1:]):
+                c += time_matrix[a][b]
+            if circuit:
+                c += time_matrix[order[-1]][order[0]]
             return c
 
         def two_opt(order: List[int]) -> List[int]:
-            best = order[:]; bestc = route_cost(best); improved = True
+            best = order[:]
+            bestc = route_cost(best)
+            improved = True
             while improved:
                 improved = False
                 for i in range(1, n - 2):
@@ -865,26 +1046,41 @@ class HeuristicRoute(MultiStopSolver):
         seeds = seeds[: self.restarts]
         best_order, best_cost = list(range(n)), float("inf")
         for s in seeds:
-            un = set(range(n)); un.remove(s)
-            order = [s]; cur = s
+            un = set(range(n))
+            un.remove(s)
+            order = [s]
+            cur = s
             while un:
                 nxt = min(un, key=lambda j: time_matrix[cur][j])
-                order.append(nxt); un.remove(nxt); cur = nxt
+                order.append(nxt)
+                un.remove(nxt)
+                cur = nxt
             if origin in order:
-                idx = order.index(origin); order = order[idx:] + order[:idx]
+                idx = order.index(origin)
+                order = order[idx:] + order[:idx]
             order = two_opt(order)
             c = route_cost(order)
-            if c < best_cost: best_cost, best_order = c, order
+            if c < best_cost:
+                best_cost, best_order = c, order
         return best_order
 
 
 class RouteSplicer:
     """Ensamblador de tramos individuales en una lista de RouteLegs según un orden dado."""
-    def splice(self, waypoints: List[NodeId], visit_order_idx: List[int], path_map: Dict[Tuple[int, int], List[NodeId]], graph: Graph, time_matrix: List[List[Seconds]]) -> List[RouteLeg]:
+
+    def splice(self,
+               waypoints: List[NodeId],
+               visit_order_idx: List[int],
+               path_map: Dict[Tuple[int,
+                                    int],
+                              List[NodeId]],
+               graph: Graph,
+               time_matrix: List[List[Seconds]]) -> List[RouteLeg]:
         """Concatena legs según `visit_order_idx` usando `path_map` y `time_matrix`."""
         legs: List[RouteLeg] = []
         for a, b in zip(visit_order_idx, visit_order_idx[1:]):
-            src = waypoints[a]; dst = waypoints[b]
+            src = waypoints[a]
+            dst = waypoints[b]
             path = path_map[(a, b)]
             seconds = time_matrix[a][b]
             dist_m = _path_distance_m(graph, path)
@@ -897,7 +1093,15 @@ class RouteSplicer:
 # ==========================================================
 class RoutingService:
     """Servicio de alto nivel: calcula rutas multi-destino y arma resultados completos."""
-    def __init__(self, graph: Graph, traffic: TrafficModel, pairwise_service: PairwiseDistanceService, solver_exact: MultiStopSolver, solver_heur: MultiStopSolver, splicer: RouteSplicer) -> None:
+
+    def __init__(
+            self,
+            graph: Graph,
+            traffic: TrafficModel,
+            pairwise_service: PairwiseDistanceService,
+            solver_exact: MultiStopSolver,
+            solver_heur: MultiStopSolver,
+            splicer: RouteSplicer) -> None:
         """Inyecta dependencias: grafo, tráfico, servicio par-a-par, solvers y splicer."""
         self.graph = graph
         self.traffic = traffic
@@ -909,41 +1113,60 @@ class RoutingService:
         self.router_astar = AStarRouter()
         self.router_bfs = BFSRouter()
 
-    def route_single(self, src: NodeId, dst: NodeId, *, hour: int, algorithm: Algorithm = Algorithm.ASTAR) -> RouteLeg:
+    def route_single(
+            self,
+            src: NodeId,
+            dst: NodeId,
+            *,
+            hour: int,
+            algorithm: Algorithm = Algorithm.ASTAR) -> RouteLeg:
         """Calcula un único tramo src→dst con el algoritmo indicado."""
         if algorithm == Algorithm.DIJKSTRA:
-            leg, _ = self.router_dijkstra.route(self.graph, src, dst, hour=hour, traffic=self.traffic)
+            leg, _ = self.router_dijkstra.route(
+                self.graph, src, dst, hour=hour, traffic=self.traffic)
         elif algorithm == Algorithm.BFS:
-            leg, _ = self.router_bfs.route(self.graph, src, dst, hour=hour, traffic=self.traffic)
+            leg, _ = self.router_bfs.route(
+                self.graph, src, dst, hour=hour, traffic=self.traffic)
         else:
-            leg, _ = self.router_astar.route(self.graph, src, dst, hour=hour, traffic=self.traffic)
+            leg, _ = self.router_astar.route(
+                self.graph, src, dst, hour=hour, traffic=self.traffic)
         return leg
 
     def route(self, request: RouteRequest) -> RouteResult:
         """Calcula una ruta multi-destino completa según el modo y algoritmo seleccionados."""
         waypoints = [request.origin] + list(request.destinations)
         time_matrix, path_map = self.pairwise.compute_matrix(
-            self.graph, waypoints, hour=request.hour, algorithm=request.algorithm, traffic=self.traffic
-        )
+            self.graph, waypoints, hour=request.hour, algorithm=request.algorithm, traffic=self.traffic)
         n = len(waypoints)
         if request.mode == RouteMode.FIXED_ORDER:
-            order_idx = list(range(n)); alg = f"{request.algorithm.value}"
+            order_idx = list(range(n))
+            alg = f"{request.algorithm.value}"
         else:
             if n <= 13:
-                order_idx = self.solver_exact.solve(waypoints, time_matrix, mode=request.mode); alg = f"{request.algorithm.value} + Held-Karp"
+                order_idx = self.solver_exact.solve(
+                    waypoints, time_matrix, mode=request.mode)
+                alg = f"{request.algorithm.value} + Held-Karp"
             else:
-                order_idx = self.solver_heur.solve(waypoints, time_matrix, mode=request.mode); alg = f"{request.algorithm.value} + NN/2opt"
-        # En modo circuito, añadimos el regreso al origen para que sea visible en el mapa y en métricas
+                order_idx = self.solver_heur.solve(
+                    waypoints, time_matrix, mode=request.mode)
+                alg = f"{request.algorithm.value} + NN/2opt"
+        # En modo circuito, añadimos el regreso al origen para que sea visible
+        # en el mapa y en métricas
         if request.mode == RouteMode.VISIT_ALL_CIRCUIT and order_idx and order_idx[-1] != order_idx[0]:
             order_idx = order_idx + [order_idx[0]]
-        legs = self.splicer.splice(waypoints, order_idx, path_map, self.graph, time_matrix)
+        legs = self.splicer.splice(
+            waypoints,
+            order_idx,
+            path_map,
+            self.graph,
+            time_matrix)
         total_s = sum(l.seconds for l in legs)
         total_m = sum(l.distance_m for l in legs)
         visit_order = [waypoints[i] for i in order_idx]
         return RouteResult(visit_order, legs, total_s, total_m, alg)
 
 
-# =================== Integración Gemini (orden de visita vía IA) ===================
+# =================== Integración Gemini (orden de visita vía IA) ========
 def route_with_gemini(
     service: "RoutingService",
     request: "RouteRequest",
@@ -959,9 +1182,11 @@ def route_with_gemini(
     - Mantiene tus caminos/tiempos por tramo (no inventa trayectos).
     - Devuelve un RouteResult idéntico al flujo normal.
     """
-    import json, re
+    import json
+    import re
 
-    # 1) Calculamos matriz de tiempos y los paths óptimos par-a-par con tu servicio
+    # 1) Calculamos matriz de tiempos y los paths óptimos par-a-par con tu
+    # servicio
     waypoints = [request.origin] + list(request.destinations)
     time_matrix, path_map = service.pairwise.compute_matrix(
         service.graph,
@@ -979,19 +1204,16 @@ def route_with_gemini(
     #    (Gemini decide orden minimizando suma de tiempos de la matriz)
     mode = request.mode.value
     circuit = (request.mode == RouteMode.VISIT_ALL_CIRCUIT)
-    constraints = (
-        f"- Usar índices 0..{n-1}\n"
-        f"- Debe comenzar en 0 (origen)\n"
-        + ("- Debe terminar nuevamente en 0 (circuito)\n" if circuit else "- No repetir 0 al final (camino abierto)\n")
-        + "- Incluir cada índice exactamente una vez (excepto repetir 0 si es circuito)\n"
-    )
+    constraints = (f"- Usar índices 0..{n -
+                                        1}\n" f"- Debe comenzar en 0 (origen)\n" +
+                   ("- Debe terminar nuevamente en 0 (circuito)\n" if circuit else "- No repetir 0 al final (camino abierto)\n") +
+                   "- Incluir cada índice exactamente una vez (excepto repetir 0 si es circuito)\n")
 
     sys_instr = (
         "You are a routing optimizer. "
         "Given a non-negative time matrix (seconds) for traveling between waypoint indices, "
         "return ONLY a strict JSON object with the visiting order that minimizes total time "
-        "under the constraints. Do not include code fences or extra keys."
-    )
+        "under the constraints. Do not include code fences or extra keys.")
 
     prompt = (
         "TASK: Choose the visiting order that minimizes total travel time.\n"
@@ -1024,7 +1246,13 @@ def route_with_gemini(
             contents=prompt,
         )
 
-        raw = getattr(resp, "text", None) or getattr(resp, "output_text", None) or ""
+        raw = getattr(
+            resp,
+            "text",
+            None) or getattr(
+            resp,
+            "output_text",
+            None) or ""
         # Limpieza por si viniera envuelto en ```json ... ```
         raw = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", raw.strip())
         data = json.loads(raw)
@@ -1033,10 +1261,12 @@ def route_with_gemini(
         # Fallback: usa tu solver local si Gemini falla
         # (mantiene robustness y no rompe el flujo)
         if n <= 13:
-            order_idx = service.solver_exact.solve(waypoints, time_matrix, mode=request.mode)
+            order_idx = service.solver_exact.solve(
+                waypoints, time_matrix, mode=request.mode)
             alg_sum = f"{request.algorithm.value} + Held-Karp (fallback)"
         else:
-            order_idx = service.solver_heur.solve(waypoints, time_matrix, mode=request.mode)
+            order_idx = service.solver_heur.solve(
+                waypoints, time_matrix, mode=request.mode)
             alg_sum = f"{request.algorithm.value} + NN/2opt (fallback)"
     else:
         # 4) Validaciones suaves de contrato
@@ -1053,16 +1283,25 @@ def route_with_gemini(
         if not valid_order(order_idx):
             # Si Gemini devolvió algo raro, aplicamos fallback local
             if n <= 13:
-                order_idx = service.solver_exact.solve(waypoints, time_matrix, mode=request.mode)
-                alg_sum = f"{request.algorithm.value} + Held-Karp (fallback-bad-json)"
+                order_idx = service.solver_exact.solve(
+                    waypoints, time_matrix, mode=request.mode)
+                alg_sum = f"{
+                    request.algorithm.value} + Held-Karp (fallback-bad-json)"
             else:
-                order_idx = service.solver_heur.solve(waypoints, time_matrix, mode=request.mode)
-                alg_sum = f"{request.algorithm.value} + NN/2opt (fallback-bad-json)"
+                order_idx = service.solver_heur.solve(
+                    waypoints, time_matrix, mode=request.mode)
+                alg_sum = f"{
+                    request.algorithm.value} + NN/2opt (fallback-bad-json)"
         else:
             alg_sum = f"gemini/{model} + {request.algorithm.value} (tramos)"
 
     # 5) Ensamblamos con tus tramos óptimos ya calculados
-    legs = service.splicer.splice(waypoints, order_idx, path_map, service.graph, time_matrix)
+    legs = service.splicer.splice(
+        waypoints,
+        order_idx,
+        path_map,
+        service.graph,
+        time_matrix)
     total_s = sum(l.seconds for l in legs)
     total_m = sum(l.distance_m for l in legs)
     visit_order = [waypoints[i] for i in order_idx]
@@ -1084,7 +1323,8 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371.0
     dlat = radians(lat2 - lat1)
     dlon = radians(lon2 - lon1)
-    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
+    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * \
+        cos(radians(lat2)) * sin(dlon / 2) ** 2
     return R * (2 * asin(sqrt(a)))
 
 
@@ -1124,10 +1364,23 @@ class TestJM(unittest.TestCase):
     def test_routing_multi(self):
         g = Graph.build_jesus_maria_hardcoded()
         t = HistoricalTrafficModel()
-        pair = PairwiseDistanceService(AStarRouter(), DijkstraRouter(), RouteCache())
-        svc = RoutingService(g, t, pair, HeldKarpExact(), HeuristicRoute(), RouteSplicer())
+        pair = PairwiseDistanceService(
+            AStarRouter(), DijkstraRouter(), RouteCache())
+        svc = RoutingService(
+            g,
+            t,
+            pair,
+            HeldKarpExact(),
+            HeuristicRoute(),
+            RouteSplicer())
         nodes = list(g.iter_nodes())
-        req = RouteRequest(origin=nodes[0].id, destinations=[nodes[5].id, nodes[20].id, nodes[-1].id], hour=8, mode=RouteMode.VISIT_ALL_OPEN, algorithm=Algorithm.ASTAR)
+        req = RouteRequest(origin=nodes[0].id,
+                           destinations=[nodes[5].id,
+                                         nodes[20].id,
+                                         nodes[-1].id],
+                           hour=8,
+                           mode=RouteMode.VISIT_ALL_OPEN,
+                           algorithm=Algorithm.ASTAR)
         res = svc.route(req)
         self.assertGreater(len(res.legs), 0)
 
@@ -1136,9 +1389,20 @@ if __name__ == "__main__":
     # Smoke test rápido
     g = Graph.build_jesus_maria_hardcoded()
     t = HistoricalTrafficModel()
-    pair = PairwiseDistanceService(AStarRouter(), DijkstraRouter(), RouteCache())
-    svc = RoutingService(g, t, pair, HeldKarpExact(), HeuristicRoute(), RouteSplicer())
+    pair = PairwiseDistanceService(
+        AStarRouter(), DijkstraRouter(), RouteCache())
+    svc = RoutingService(
+        g,
+        t,
+        pair,
+        HeldKarpExact(),
+        HeuristicRoute(),
+        RouteSplicer())
     nodes = list(g.iter_nodes())
     src, dst = nodes[0].id, nodes[-1].id
     leg = svc.route_single(src, dst, hour=8)
-    print(f"Smoke: {src}→{dst}: {leg.seconds:.1f}s · {leg.distance_m/1000:.2f} km")
+    print(
+        f"Smoke: {src}→{dst}: {
+            leg.seconds:.1f}s · {
+            leg.distance_m /
+            1000:.2f} km")

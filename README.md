@@ -300,27 +300,81 @@ Configuración del escenario:
 - Hora del día: `8` (horario pico de la mañana, mayor congestión).
 - Velocidad máxima del conductor: `40 km/h`.
 
-### 6.1 Resultados numéricos
+### 6.1 Resultados numéricos (A* vs Dijkstra)
 
-Salida relevante del profiling:
+**Escenario 1 – A***
 
+- Comando:
+	- `--algo astar --mode visit_all_circuit --n 6 --hour 8 --driver-max-kmh 40`.
 - Resumen de la ruta:
 	- `Total: 155.5s · 1.15 km · algoritmo: astar + Held-Karp`.
-- Medidas de rendimiento de la ejecución del perfilado:
+- Medidas de rendimiento:
 	- `Wall time: 0.0210 s`.
 	- `Peak memory: 0.134 MiB`.
-	- Llamadas totales de funciones: `7807` (7738 primitivas).
-	- Top de funciones por tiempo acumulado de CPU (`cumtime`):
-		- `logica.py:route` (servicio de ruteo multi-destino).
-		- `logica.py:compute_matrix` (matriz par-a-par con concurrencia).
-		- Funciones internas de `concurrent.futures` y `threading` relacionadas con
-			la gestión del `ThreadPoolExecutor`.
-		- `logica.py:route_pair` y `logica.py:DijkstraRouter.route`/`AStarRouter.route`
-			como responsables directos del cálculo de tramos.
+	- Llamadas totales: `7807` (7738 primitivas).
+	- Top por `cumtime`: `RoutingService.route`, `PairwiseDistanceService.compute_matrix`,
+		funciones internas de `concurrent.futures`/`threading`, `route_pair` y
+		`AStarRouter.route`.
+
+**Escenario 2 – Dijkstra**
+
+- Comando:
+	- `--algo dijkstra --mode visit_all_circuit --n 6 --hour 8 --driver-max-kmh 40`.
+- Resumen de la ruta:
+	- `Total: 155.5s · 1.15 km · algoritmo: dijkstra + Held-Karp`.
+- Medidas de rendimiento:
+	- `Wall time: 0.1769 s`.
+	- `Peak memory: 0.250 MiB`.
+	- Llamadas totales: `48419` (43261 primitivas).
+	- Top por `cumtime`: dominado por utilidades de concurrencia
+		(`concurrent.futures._base`, `threading`, colas internas) y por
+		`RoutingService.route`, `PairwiseDistanceService.compute_matrix`,
+		`route_pair` y `DijkstraRouter.route`.
+
+En ambos casos, el costo de la ruta (155.5 s y 1.15 km) es idéntico, ya que
+tanto A* como Dijkstra operan sobre la misma red y el mismo modelo de tráfico.
 
 ### 6.2 Interpretación
 
-- **Tiempo de viaje de la ruta (155.5 s)**:
+**Calidad de la solución (tiempo de viaje de la ruta, 155.5 s)**
+
+- Representa el tiempo estimado sobre la red vial y el modelo de tráfico.
+- Para un circuito de ~1.15 km en hora pico con un límite de 40 km/h y
+	factores de congestión, un tiempo del orden de 2–3 minutos es coherente
+	con lo esperado para una ciudad compacta.
+
+**Rendimiento comparativo A* vs Dijkstra**
+
+- **A***:
+	- Wall time ~0.021 s; pico de memoria ~0.134 MiB.
+	- Usa una heurística geográfica de tiempo (`est`) para priorizar nodos que
+		están “más cerca en tiempo” del destino.
+	- Esto reduce la cantidad de nodos expandidos por tramo y, en consecuencia,
+		la cantidad de llamadas a funciones y trabajo del `ThreadPoolExecutor`.
+
+- **Dijkstra**:
+	- Wall time ~0.177 s (≈8 veces más lento en este escenario); pico de memoria
+		~0.250 MiB (casi el doble).
+	- No usa heurística: explora el grafo de manera más exhaustiva, lo que
+		incrementa significativamente el número de llamadas y trabajo por hilo.
+	- Las trazas de `concurrent.futures` y `threading` dominan más el perfil
+		debido a la mayor cantidad de tareas procesadas.
+
+**Técnicas que impactan en el rendimiento**
+
+- **Heurística informada (A*)**:
+	- La heurística de tiempo geográfico hace que A* expanda menos nodos que
+		Dijkstra para llegar al mismo resultado, reduciendo el coste total.
+- **Batching y concurrencia en Dijkstra**:
+	- El ruteador Dijkstra está optimizado con batching y `ThreadPoolExecutor`,
+		pero aun así, al no contar con heurística, realiza más trabajo global en
+		este tipo de escenario.
+- **Caché de tramos (RouteCache) y memoización**:
+	- Ambas técnicas benefician tanto a A* como a Dijkstra, evitando recomputar
+		tramos repetidos y reduciendo tiempo y llamadas a funciones.
+- **Modelo de tráfico y límite de velocidad**:
+	- Afectan los valores de costo, pero no la complejidad; ambos algoritmos
+		trabajan sobre los mismos costos y producen resultados coherentes.
 	- Representa el tiempo estimado sobre la red vial y el modelo de tráfico.
 	- Para un circuito de ~1.15 km en hora pico con un límite de 40 km/h y
 		factores de congestión, un tiempo del orden de 2–3 minutos es coherente
@@ -357,7 +411,7 @@ En resumen, el motor cumple con los objetivos de:
 - Mantener tiempos de respuesta muy bajos para escenarios típicos usados en la UI.
 - Utilizar memoria de forma eficiente.
 - Concentrar el coste de CPU en las partes esperadas del pipeline de cálculo
-	(matriz par-a-par, ruteo y solver TSP), lo cual es coherente con el diseño
-	y las técnicas de optimización implementadas (memoización, concurrencia y
-	solvers adecuados para el tamaño del problema).
+	(matriz par-a-par, ruteo y solver TSP).
+- Demostrar que **A***, gracias a su heurística, resulta más eficiente que
+	Dijkstra en este contexto, manteniendo la misma calidad de solución.
 

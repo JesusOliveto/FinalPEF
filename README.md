@@ -275,3 +275,89 @@ arquitectura, tecnologías y forma de ejecución, y sirve como base para
 extensiones futuras (por ejemplo, incorporar datos reales de OSM o más heurísticas
 de optimización de rutas).
 
+---
+
+## 6. Informe de rendimiento
+
+Para evaluar el rendimiento del motor de ruteo, se ejecutó el comando de profiling
+incluido en `tests_profiling.py`:
+
+```powershell
+C:/Users/Gsu/Documents/FinalPEF/.venv/Scripts/python.exe tests_profiling.py \
+	--profile \
+	--algo astar \
+	--mode visit_all_circuit \
+	--n 6 \
+	--hour 8 \
+	--driver-max-kmh 40
+```
+
+Configuración del escenario:
+
+- Algoritmo base de tramos: `astar`.
+- Modo de ruta: `visit_all_circuit` (circuito que vuelve al origen).
+- Número de nodos considerados: `n = 6`.
+- Hora del día: `8` (horario pico de la mañana, mayor congestión).
+- Velocidad máxima del conductor: `40 km/h`.
+
+### 6.1 Resultados numéricos
+
+Salida relevante del profiling:
+
+- Resumen de la ruta:
+	- `Total: 155.5s · 1.15 km · algoritmo: astar + Held-Karp`.
+- Medidas de rendimiento de la ejecución del perfilado:
+	- `Wall time: 0.0210 s`.
+	- `Peak memory: 0.134 MiB`.
+	- Llamadas totales de funciones: `7807` (7738 primitivas).
+	- Top de funciones por tiempo acumulado de CPU (`cumtime`):
+		- `logica.py:route` (servicio de ruteo multi-destino).
+		- `logica.py:compute_matrix` (matriz par-a-par con concurrencia).
+		- Funciones internas de `concurrent.futures` y `threading` relacionadas con
+			la gestión del `ThreadPoolExecutor`.
+		- `logica.py:route_pair` y `logica.py:DijkstraRouter.route`/`AStarRouter.route`
+			como responsables directos del cálculo de tramos.
+
+### 6.2 Interpretación
+
+- **Tiempo de viaje de la ruta (155.5 s)**:
+	- Representa el tiempo estimado sobre la red vial y el modelo de tráfico.
+	- Para un circuito de ~1.15 km en hora pico con un límite de 40 km/h y
+		factores de congestión, un tiempo del orden de 2–3 minutos es coherente
+		con lo esperado para una ciudad compacta.
+
+- **Wall time del motor (0.021 s)**:
+	- La ejecución completa del caso de prueba (cálculo de matriz, Held‑Karp,
+		ensamblado de tramos y reporting) tarda alrededor de 21 milisegundos en la
+		máquina de prueba.
+	- Esto indica que, para tamaños de problema pequeños/medios (como el uso típico
+		desde la UI), el motor responde prácticamente en tiempo real.
+
+- **Uso de memoria (pico ~0.134 MiB)**:
+	- El perfil de memoria muestra un pico muy bajo (del orden de décimas de MiB),
+		lo que confirma que la estructura de datos (grafo, matrices y cachés) es
+		ligera para el tamaño actual de la red y del problema.
+	- Esto deja margen para aumentar el número de destinos o la densidad de la
+		red sin comprometer la memoria en entornos de escritorio.
+
+- **Distribución del costo en CPU**:
+	- Las funciones con mayor tiempo acumulado son:
+		- `RoutingService.route` y `PairwiseDistanceService.compute_matrix`, que
+			orquestan el cálculo de la matriz de tiempos y el orden de visita.
+		- Lógicas internas de `ThreadPoolExecutor` y `threading`, resultado esperado
+			dado que se utiliza concurrencia para los pares par-a-par.
+		- Las funciones de cálculo de heurística (`est`) y de ruteo (`route_pair`,
+			`DijkstraRouter.route`/`AStarRouter.route`).
+	- No se observan cuellos de botella inesperados fuera de estas zonas críticas,
+		lo que sugiere que la mayor parte del coste se invierte efectivamente en
+		cómputo de rutas, y no en overhead innecesario.
+
+En resumen, el motor cumple con los objetivos de:
+
+- Mantener tiempos de respuesta muy bajos para escenarios típicos usados en la UI.
+- Utilizar memoria de forma eficiente.
+- Concentrar el coste de CPU en las partes esperadas del pipeline de cálculo
+	(matriz par-a-par, ruteo y solver TSP), lo cual es coherente con el diseño
+	y las técnicas de optimización implementadas (memoización, concurrencia y
+	solvers adecuados para el tamaño del problema).
+

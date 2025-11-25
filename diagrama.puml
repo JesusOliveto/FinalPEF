@@ -4,26 +4,39 @@ actor UI as User
 participant "streamlit_app.py" as UIApp
 participant "RoutingService" as RS
 participant "PairwiseDistanceService" as PDS
-participant "Router (A*/Dijkstra/BFS)" as RTR
+participant "AStarRouter /\nDijkstraRouter /\nBFSRouter" as RTR
 participant "RouteCache" as CACH
 participant "MultiStopSolver\n(HeldKarpExact/HeuristicRoute)" as SOLV
 participant "RouteSplicer" as SPL
+participant "route_with_gemini()" as GEM
+participant "tests_profiling.py" as PROF
 
-User -> UIApp: set origin + destinos + hour + modo
+User -> UIApp: selecciona origen, destinos, hora, modo, algoritmo
 UIApp -> RS: route(request: RouteRequest)
 
 RS -> PDS: compute_matrix(graph, waypoints, hour, alg, traffic)
-PDS -> CACH: get/set por tramo (route cache)
+PDS -> CACH: get/set por tramo (RouteCache LRU)
 PDS -> RTR: route(...) por pares (batch + concurrencia)
 RTR --> PDS: RouteLeg + SearchStats (por par)
 PDS --> RS: (time_matrix, path_map)
 
-RS -> SOLV: solve(waypoints, time_matrix, mode)
-SOLV --> RS: visit_order_idx
+alt modo = FIXED_ORDER o solver local
+	RS -> SOLV: solve(waypoints, time_matrix, mode)
+	SOLV --> RS: visit_order_idx
+else modo IA (orden con Gemini)
+	RS -> GEM: route_with_gemini(service, request, api_key)
+	GEM --> RS: RouteResult (visit_order, legs, métricas)
+end
 
 RS -> SPL: splice(waypoints, visit_order_idx, path_map)
 SPL --> RS: legs: List<RouteLeg>
 
 RS --> UIApp: RouteResult(visit_order, legs, totales, métricas)
-UIApp --> User: muestra ruta en mapa + KPIs
+UIApp --> User: visualiza ruta en mapa + KPIs
+
+== Testing y profiling ==
+User -> PROF: --tests / --smoke / --profile
+PROF -> RS: construye servicios y ejecuta casos de prueba
+PROF -> RS: perfila escenarios (A*/Dijkstra, modos de ruta)
+PROF --> User: resultados de tests + métricas de tiempo/CPU/memoria
 @enduml

@@ -21,6 +21,7 @@ import cProfile
 import pstats
 import io
 import time
+import tracemalloc
 
 
 # ==========================================================
@@ -1341,32 +1342,60 @@ def _path_distance_m(graph: Graph, path: List[NodeId]) -> float:
 
 
 def run_profiled(fn: Callable, *args, **kwargs) -> str:
-    """Devuelve un resumen pstats de ejecutar fn(*args, **kwargs)."""
+    """Perfila una llamada y devuelve un resumen de CPU, tiempo y memoria.
+
+    Este helper ejecuta ``fn(*args, **kwargs)`` y devuelve una cadena de texto
+    con un resumen combinado de:
+
+    - Tiempo wall-clock total (segundos) medido con ``time.perf_counter``.
+    - Estadísticas de CPU a través de ``cProfile`` (top 20 por ``cumtime``).
+    - Uso de memoria (pico) medido con ``tracemalloc``.
+    """
     pr = cProfile.Profile()
+    tracemalloc.start()
+    t0 = time.perf_counter()
     pr.enable()
     fn(*args, **kwargs)
     pr.disable()
+    elapsed = time.perf_counter() - t0
+    current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
     s = io.StringIO()
-    ps = pstats.Stats(pr, stream=s).sort_stats("cumtime")
-    ps.print_stats(20)
+    s.write(f"Wall time: {elapsed:.4f} s\n")
+    s.write(f"Peak memory: {peak / (1024 * 1024):.3f} MiB\n")
+    s.write("\nTop 20 functions by cumulative CPU time (cProfile):\n")
+    pstats.Stats(pr, stream=s).sort_stats("cumtime").print_stats(20)
     return s.getvalue()
 
 
 def profile_call(fn: Callable, *args, **kwargs) -> Tuple[Any, str]:
-    """Ejecuta una función con cProfile y devuelve (resultado, reporte pstats).
+    """Ejecuta una función y devuelve (resultado, reporte de CPU/tiempo/memoria).
 
     Args:
-        fn: función a ejecutar.
-        *args, **kwargs: argumentos para la función.
+        fn: Función a ejecutar.
+        *args, **kwargs: Argumentos posicionales y con nombre para la función.
+
     Returns:
-        tuple[result, str]: resultado de la función y resumen de pstats
-        (top 20 por cumtime).
+        tuple[result, str]:
+            - ``result``: resultado de ``fn(*args, **kwargs)``.
+            - ``str``: reporte textual con tiempo wall-clock, pico de memoria
+              y top de funciones según ``cProfile`` (ordenadas por ``cumtime``).
     """
     pr = cProfile.Profile()
+    tracemalloc.start()
+    t0 = time.perf_counter()
     pr.enable()
     result = fn(*args, **kwargs)
     pr.disable()
+    elapsed = time.perf_counter() - t0
+    current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
     s = io.StringIO()
+    s.write(f"Wall time: {elapsed:.4f} s\n")
+    s.write(f"Peak memory: {peak / (1024 * 1024):.3f} MiB\n")
+    s.write("\nTop 20 functions by cumulative CPU time (cProfile):\n")
     pstats.Stats(pr, stream=s).sort_stats("cumtime").print_stats(20)
     return result, s.getvalue()
 

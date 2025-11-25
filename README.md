@@ -415,3 +415,113 @@ En resumen, el motor cumple con los objetivos de:
 - Demostrar que **A***, gracias a su heurística, resulta más eficiente que
 	Dijkstra en este contexto, manteniendo la misma calidad de solución.
 
+
+
+## Historial resumido del proyecto "Final PEF 2025"
+
+Autor: Ignacio Jesús Olariaga Oliveto y Facundo Lopez Moreno
+
+**Herramientas utilizadas para el desarrollo:**
+
+- Git para control de versiones.
+- Streamlit para la creación de la aplicación web.
+- ChatGPT para asistencia en diseño inicial y generación de código.
+- Copilot con Visual Studio Code para autocompletado y sugerencias de código.
+- Copilot Agents con modelo GPT-5 para generación avanzada de código y documentación.
+- PlantUML para diagramas UML.
+- PyDeck para visualización de mapas interactivos.
+- OSMnx para integración con datos de OpenStreetMap.
+- PEP8 para estandarización de estilo de código.
+
+
+### 1. Inicio del repositorio
+
+- `3f6aac4e30a2` — first commit.
+- `756122871c6a` — todos los archivos base.
+
+### 2. Creación de la app "Pueblito: Rutas Inteligentes"
+
+- `daafe24bcb6f` — feat: Add Streamlit app for intelligent routing in "Pueblito":
+	- Se crea la primera versión de la app Streamlit (`streamlit_app.py`).
+	- Integración con PyDeck para mapas interactivos (calles, tráfico, POIs).
+	- Se agregan diagramas UML (`DER.puml`, `DER_operacional.puml`, `diagrama.puml`).
+	- Se actualiza `requirements.txt` con dependencias de Streamlit y testing.
+
+- `4dbc1df3d511`, `fcd6ea4dcb87` — Fixes en referencias a `graph` y ajustes en `make_pois`.
+
+### 3. Integración con OSM y mejoras de visualización
+
+- `10cbf34607a8` — feat: Enhance "Pueblito" app with OSM integration and new features:
+	- Toggle entre grilla sintética y grafo OSM de Jesús María.
+	- Carga y caché de grafo OSM (GraphML opcional).
+	- Mejoras en estilos visuales y capas de mapa.
+
+- `f0b1cf1c22c3` — fix: Añadir `osmnx` a los requisitos.
+- `2da98fb397e5` — feat: Añadir opciones de fallback en la carga de OSM.
+- `c590ced1519f` — Refactor de la app para simplificar integración OSM y UI.
+- `e46d1f91152f`, `e8fddbfa0577` — Ajustes de coordenadas y rotación de puntos.
+
+### 4. Ajustes de grilla, centrado y modelo de grafo
+
+- `86f8206b1096` — Actualizar coordenadas base en `Graph` y POIs.
+- `b15436e64a8f` — Refactor de estructura de código para legibilidad.
+- `6c5e7bc5ad39`, `a9478a1e85fe`, `d76217a33884e`, `c327ce20f20e`, `12342e1a1cd2`,
+	`422567486add`, `d7bdb69c6bef`, `898900e4af3a` — Ajustes sucesivos de centrado y grilla.
+- `60e552715980`, `2e49273d98ae` — Fixes de estilo del mapa (`none`) en PyDeck.
+
+### 5. Hacia un modelo de ciudad más realista
+
+- `e1d6710fd5e0` — Implementar política de doble mano y ajustes en aristas del grafo.
+- `35b8ca1e2768` — Refactorización general.
+- `7f9d52884e29` — Mejorar documentación y refactorizar funciones en `logica.py` y `streamlit_app.py`.
+- `2c00a67a861e` — Agregar límite de velocidad al modelo de tráfico histórico y ajustar carga de servicios.
+
+### 6. Transición a "Jesús María: Rutas Inteligentes" e integración IA
+
+- `ef71292137b5` — Eliminar heurísticas del API público y ajustar inicialización de servicios.
+- `e87aeb0e987d` — Añadir regreso al origen en modo circuito.
+- `e88cb18ef225` — Eliminar entradas manuales y simplificar selección de destinos.
+- `8243bf592e04` — Ajustar slider de hora del día en la barra lateral.
+
+- `3b3a07cbc6aa` — Refactor grande de `streamlit_app.py`:
+	- Eliminar `SSSPMemo` y banderas de dirección de aristas en la UI.
+	- Mejorar botón "Clear Destinations", capas de mapa y generación de POIs.
+	- Limpiar configuración de la barra lateral.
+	- Añadir primera implementación del cliente Google GenAI (Gemini).
+
+- `005eb188929f`, `1c791c18cb9a` — Limpieza de código muerto y pequeños arreglos.
+- `4df909b83b23` — "integracion de gemini": refuerzo de la integración IA.
+
+### 7. Ajustes de contexto "Jesús María" y mejoras de UI
+
+- `64a5073c9fcd` — Actualizar nombres/participantes en diagramas; agregar `legs` a `RouteResult`;
+	mejorar UI para "Jesús María: Rutas Inteligentes".
+
+- `42105c7fb03e` — Eliminar `SSSPMemo` no utilizado en `logica.py`; mejorar etiquetas de POI
+	y textos de botones en `streamlit_app.py`.
+
+- `c869e9f0fc6c` — Agregar nota descriptiva al Router en `DER_operacional.puml`.
+
+### 8. Optimización del motor y documentación
+
+- `2c3b734a3d9a` — Batching y paralelización en Dijkstra; memoización de resultados.
+	("Requerimientos técnicos cumplidos").
+
+- `7894d1eee148` — Documentación detallada en `logica.py` y `streamlit_app.py`.
+- `9c7a75b04e57` — Normalización de estilo PEP8.
+- `57653182128c` — Funciones de perfilado/temporización en `logica.py` y CLI de utilidades.
+
+### 9. Afinado de experiencia de usuario
+
+- `bdfc0d12b097` — Tiempo estimado en minutos en la interfaz Streamlit.
+- `67d7051e1c13`, `c1f4de3fc685`, `1f89e0f0ae0f` — Ajustes sucesivos de posición y filas
+	en los parches de grilla en `Graph`.
+- `7be59d3ce793` — Agregar nombres de POI y mejorar visualización de rutas en la UI.
+
+### 10. Separación de responsabilidades, tests y profiling
+
+- `4e59307cc92a` — Refactor routing engine tests and profiling utilities:
+	- Eliminación de código temporal y `temp.txt`.
+	- Creación de `tests_profiling.py` para concentrar tests y profiling.
+	- Implementación de casos de prueba para Dijkstra, A* y servicios auxiliares.
+	- Introducción de smoke tests y comandos CLI para `--tests`, `--smoke` y `--profile`.
